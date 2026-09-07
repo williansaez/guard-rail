@@ -3,14 +3,15 @@
   "name": "guard-rail",
   "description": "Guarda-corpos de dados pessoais (LGPD/RGPD) para o Claude Code e Cowork.",
   "owner": {
-    "name": "Willian Saez"
+    "name": "Willian Saez",
+    "url": "https://github.com/williansaez"
   },
   "plugins": [
     {
       "name": "guard-rail",
-      "description": "Redige dados pessoais nos resultados das ferramentas com pseudónimos reversíveis, bloqueia prompts com PII, e regista todas as violações. Usa um modelo local via Ollama.",
       "source": "./",
-      "category": "security"
+      "description": "Redige dados pessoais nos resultados das ferramentas com pseudónimos reversíveis, bloqueia prompts com PII, e regista todas as violações. Usa um modelo local via Ollama.",
+      "version": "2.1.0"
     }
   ]
 }

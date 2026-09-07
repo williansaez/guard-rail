@@ -3,8 +3,10 @@
   "version": "2.1.0",
   "description": "Guarda-corpos de dados pessoais (LGPD/RGPD) para o Claude Code. Redige resultados de ferramentas com pseudónimos reversíveis, bloqueia prompts com PII, e regista todas as violações.",
   "author": {
-    "name": "Willian Saez"
+    "name": "Willian Saez",
+    "url": "https://github.com/williansaez"
   },
+  "repository": "https://github.com/williansaez/guard-rail",
   "keywords": ["lgpd", "rgpd", "privacy", "pii", "redaction", "audit", "ollama", "hook"],
 
   "hooks": {
