@@ -5,6 +5,7 @@
 [![CI](https://github.com/williansaez/guard-rail/actions/workflows/ci.yml/badge.svg)](https://github.com/williansaez/guard-rail/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![Buy Me A Coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-donate-yellow.svg)](https://www.buymeacoffee.com/williansaez)
 
 guard-rail is a plugin for Claude Code. It hooks the point where tool results
 reach the model and replaces personal data — national IDs, emails, phone numbers,
@@ -276,6 +277,8 @@ instead. The asymmetry is imposed by the hook API, not chosen.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+If guard-rail saves you time, you can [buy me a coffee](https://www.buymeacoffee.com/williansaez).
 
 Security policy and threat model: [SECURITY.md](SECURITY.md).
 Contributing, including the rule about validators: [CONTRIBUTING.md](CONTRIBUTING.md).
