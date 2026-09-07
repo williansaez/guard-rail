@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+
+  "_bloqueio_do_prompt": "guard.py — UserPromptSubmit",
+  "block_at": "MEDIO",
+  "use_llm": true,
+  "min_chars_for_llm": 40,
+  "fail_closed": false,
+
+  "_redacao_de_ferramentas": "redact.py — PostToolUse",
+  "redact_tool_output": true,
+  "redact_matchers": ["mcp__*__*", "Read", "Grep", "Bash"],
+  "max_output_chars": 400000,
+  "llm_on_tool_output": false,
+  "llm_tool_matchers": ["mcp__abap-adt__*"],
+  "llm_max_chars": 4000,
+
+  "_modelo_local": "partilhado pelas duas camadas",
+  "model": "qwen3.5:9b",
+  "ollama_host": "http://localhost:11434",
+  "timeout_seconds": 8,
+  "keep_alive": "30m",
+
+  "_client_terms": "NAO preenchas aqui. Nomes de cliente sao dados a proteger, e este ficheiro esta versionado no git. Poe-os em ~/.config/guard-rail.json, que o codigo le a seguir a este e sobrepoe qualquer chave.",
+  "client_terms": []
+}

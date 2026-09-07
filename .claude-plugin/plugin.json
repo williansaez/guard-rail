@@ -1,0 +1,49 @@
+{
+  "name": "guard-rail",
+  "version": "2.1.0",
+  "description": "Guarda-corpos de dados pessoais (LGPD/RGPD) para o Claude Code. Redige resultados de ferramentas com pseudónimos reversíveis, bloqueia prompts com PII, e regista todas as violações.",
+  "author": {
+    "name": "Willian Saez"
+  },
+  "keywords": ["lgpd", "rgpd", "privacy", "pii", "redaction", "audit", "ollama", "hook"],
+
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/heartbeat.py\"",
+            "timeout": 5,
+            "statusMessage": "Armando guard-rail..."
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/guard.py\"",
+            "timeout": 15,
+            "statusMessage": "Verificando dados pessoais..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*|Read|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/redact.py\"",
+            "timeout": 20,
+            "statusMessage": "Redigindo dados pessoais..."
+          }
+        ]
+      }
+    ]
+  }
+}

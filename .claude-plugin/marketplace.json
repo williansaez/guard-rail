@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "guard-rail",
+  "description": "Guarda-corpos de dados pessoais (LGPD/RGPD) para o Claude Code e Cowork.",
+  "owner": {
+    "name": "Willian Saez"
+  },
+  "plugins": [
+    {
+      "name": "guard-rail",
+      "description": "Redige dados pessoais nos resultados das ferramentas com pseudónimos reversíveis, bloqueia prompts com PII, e regista todas as violações. Usa um modelo local via Ollama.",
+      "source": "./",
+      "category": "security"
+    }
+  ]
+}

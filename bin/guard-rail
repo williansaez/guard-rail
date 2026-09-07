@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""
+guard-rail — consola do plugin.
+
+  guard-rail log                    violações recentes
+  guard-rail log --today            só as de hoje
+  guard-rail log --since 2026-09-01 desde uma data
+  guard-rail log --severity ALTO    só as de gravidade alta
+  guard-rail log --leaks            só o que passou EM CLARO
+  guard-rail log --summary          agregado por ponto de violação
+  guard-rail log --json             saída crua, para outra ferramenta
+
+  guard-rail map                    mapa de pseudónimos da sessão
+  guard-rail map EMAIL_001          valor real desse rótulo
+  guard-rail map -t "texto"         troca pseudónimos pelos valores reais
+
+  guard-rail local <ficheiro>       corre um prompt bloqueado no modelo local
+  guard-rail local "pergunta"
+
+  guard-rail purge [dias]           apaga mapas e log com mais de N dias (7)
+
+  guard-rail doctor                 o que está mesmo a funcionar nesta máquina
+
+O log guarda pseudónimos, nunca valores reais. Para o valor real cruza com
+o mapa. Ambos vivem em ~/.cache/guard-rail/ com permissões 0600.
+"""
+
+# Anotacoes preguicosas: mantem compatibilidade com o Python 3.9 que
+# vem no macOS. Sem isto, `list[str] | None` e' SyntaxError no arranque.
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "hooks"))
+
+import auditlog  # noqa: E402
+import pseudonyms  # noqa: E402
+
+CACHE = pseudonyms.CACHE_DIR
+
+SEV_ICON = {"ALTO": "🔴", "MEDIO": "🟡", "NENHUM": "⚪", "INFO": "🔵"}
+ACTION_LABEL = {
+    auditlog.BLOCKED: "BLOQUEADO",
+    auditlog.REDACTED: "redigido",
+    auditlog.NOT_REDACTED: "PASSOU EM CLARO",
+    auditlog.DEGRADED: "controlo degradado",
+}
+
+
+# --------------------------------------------------------------------------- log
+
+
+def cmd_log(args: list[str]) -> int:
+    since = None
+    severity = None
+    action = None
+    as_json = "--json" in args
+    summary = "--summary" in args
+
+    if "--today" in args:
+        since = datetime.now().astimezone().strftime("%Y-%m-%dT00:00:00")
+    if "--since" in args:
+        since = args[args.index("--since") + 1]
+    if "--severity" in args:
+        severity = args[args.index("--severity") + 1].upper()
+    if "--leaks" in args:
+        action = auditlog.NOT_REDACTED
+
+    events = auditlog.read_events(since=since, severity=severity, action=action)
+
+    if as_json:
+        for e in events:
+            print(json.dumps(e, ensure_ascii=False))
+        return 0
+
+    if not events:
+        print("Sem violações registadas para esse filtro.")
+        return 0
+
+    if summary:
+        return _print_summary(events)
+
+    limit = 40
+    if "-n" in args:
+        limit = int(args[args.index("-n") + 1])
+
+    shown = events[-limit:]
+    for e in shown:
+        icon = SEV_ICON.get(e.get("severity", ""), "⚪")
+        label = ACTION_LABEL.get(e.get("action", ""), e.get("action", ""))
+        ts = e.get("ts", "")[:19].replace("T", " ")
+        print(f"{icon} {ts}  {label:<18} {e.get('point', '')}")
+
+        if e.get("note"):
+            print(f"     ↳ {e['note']}")
+
+        kinds: dict[str, list[str]] = {}
+        for f in e.get("findings", []):
+            kinds.setdefault(f["kind"], []).append(f.get("pseudonym", "—"))
+        for kind, labels in kinds.items():
+            uniq = sorted(set(labels))
+            preview = ", ".join(uniq[:6]) + (f" (+{len(uniq)-6})" if len(uniq) > 6 else "")
+            print(f"     • {kind}: {len(labels)}×  {preview}")
+        if e.get("findings_truncated"):
+            print(f"     • (+{e['findings_truncated']} não listados)")
+
+    if len(events) > len(shown):
+        print(f"\n… {len(events) - len(shown)} evento(s) mais antigos. Usa -n para ver mais.")
+    print(f"\n{len(events)} evento(s). Log: {auditlog.LOG_PATH}")
+    return 0
+
+
+def _print_summary(events: list[dict]) -> int:
+    by_point: dict[str, dict[str, int]] = {}
+    by_kind: dict[str, int] = {}
+    leaks = 0
+
+    for e in events:
+        point = e.get("point", "?")
+        act = e.get("action", "?")
+        by_point.setdefault(point, {}).setdefault(act, 0)
+        by_point[point][act] += 1
+        if act == auditlog.NOT_REDACTED:
+            leaks += 1
+        for f in e.get("findings", []):
+            by_kind[f["kind"]] = by_kind.get(f["kind"], 0) + 1
+
+    print("Por ponto de violação\n")
+    width = max(len(p) for p in by_point) if by_point else 10
+    for point, actions in sorted(by_point.items(), key=lambda kv: -sum(kv[1].values())):
+        parts = ", ".join(f"{ACTION_LABEL.get(a, a)} {n}" for a, n in sorted(actions.items()))
+        print(f"  {point:<{width}}  {parts}")
+
+    if by_kind:
+        print("\nPor tipo de dado\n")
+        width = max(len(k) for k in by_kind)
+        for kind, n in sorted(by_kind.items(), key=lambda kv: -kv[1]):
+            print(f"  {kind:<{width}}  {n}")
+
+    print(f"\n{len(events)} evento(s) no total.")
+    if leaks:
+        print(f"⚠️  {leaks} evento(s) em que dados passaram EM CLARO — ver `guard-rail log --leaks`")
+    return 0
+
+
+# --------------------------------------------------------------------------- map
+
+
+def _latest_map() -> pseudonyms.PseudonymMap | None:
+    maps = sorted(CACHE.glob("map-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not maps:
+        return None
+    return pseudonyms.PseudonymMap(maps[0].stem[len("map-") :])
+
+
+def cmd_map(args: list[str]) -> int:
+    pmap = _latest_map()
+    if not pmap:
+        print("Sem mapas. Nada foi redigido ainda.")
+        return 0
+
+    if args and args[0] in ("-t", "--translate"):
+        print(pmap.restore(" ".join(args[1:])))
+        return 0
+
+    if args:
+        value = pmap.resolve(args[0])
+        if value is None:
+            print(f"'{args[0]}' não está no mapa.", file=sys.stderr)
+            return 1
+        print(value)
+        return 0
+
+    entries = pmap.entries()
+    if not entries:
+        print("Mapa vazio.")
+        return 0
+    print(f"{pmap.path}\n")
+    width = max(len(label) for label, _ in entries)
+    for label, value in entries:
+        print(f"  {label:<{width}}  →  {value}")
+    print(f"\n{len(entries)} entrada(s)")
+    return 0
+
+
+# ------------------------------------------------------------------------- local
+
+
+def cmd_local(args: list[str]) -> int:
+    model = os.environ.get("GUARD_RAIL_MODEL", "qwen3.5:9b")
+
+    if not args:
+        print("Uso: guard-rail local <ficheiro|texto>", file=sys.stderr)
+        return 1
+
+    if Path(args[0]).is_file():
+        prompt = Path(args[0]).read_text(encoding="utf-8")
+        print(f"── prompt: {args[0]} ──", file=sys.stderr)
+    else:
+        prompt = " ".join(args)
+
+    if not prompt.strip():
+        print("Prompt vazio.", file=sys.stderr)
+        return 1
+
+    try:
+        return subprocess.run(["ollama", "run", model], input=prompt, text=True).returncode
+    except FileNotFoundError:
+        print("ollama não encontrado no PATH. Instala com: brew install ollama", file=sys.stderr)
+        return 1
+
+
+# ------------------------------------------------------------------------- purge
+
+
+def cmd_purge(args: list[str]) -> int:
+    days = float(args[0]) if args else 7.0
+    cutoff = time.time() - days * 86400
+    removed = 0
+
+    for path in CACHE.glob("map-*.json"):
+        if path.stat().st_mtime < cutoff:
+            path.unlink()
+            removed += 1
+    for path in CACHE.glob("blocked-*.txt"):
+        if path.stat().st_mtime < cutoff:
+            path.unlink()
+            removed += 1
+
+    # O log é filtrado por data, não apagado inteiro: manter o histórico
+    # de violações é o objetivo dele.
+    kept = []
+    if auditlog.LOG_PATH.is_file():
+        limit = (datetime.now().astimezone() - timedelta(days=days)).isoformat()
+        kept = [e for e in auditlog.read_events() if e.get("ts", "") >= limit]
+        with open(auditlog.LOG_PATH, "w", encoding="utf-8") as fh:
+            for e in kept:
+                fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+
+    print(f"{removed} ficheiro(s) apagado(s); {len(kept)} evento(s) mantidos no log.")
+    return 0
+
+
+# ------------------------------------------------------------------------ doctor
+
+
+def _line(ok: bool | None, label: str, detail: str = "") -> None:
+    icon = {True: "✅", False: "❌", None: "⚠️ "}[ok]
+    print(f"  {icon} {label}")
+    if detail:
+        print(f"       {detail}")
+
+
+def cmd_doctor(args: list[str]) -> int:
+    """
+    Diz o que está mesmo a funcionar. A pergunta que interessa não é
+    "o código está correcto" — é "os hooks disparam nesta superfície".
+    Só o log responde a isso, porque só ele regista factos.
+    """
+    problems = 0
+
+    print("\n── Ambiente ──\n")
+    _line(sys.version_info >= (3, 9), f"Python {sys.version.split()[0]}", str(sys.executable))
+    if sys.version_info < (3, 9):
+        problems += 1
+
+    # Ollama
+    import urllib.error
+    import urllib.request
+
+    cfg_path = ROOT / "config.json"
+    cfg = {}
+    if cfg_path.is_file():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            _line(False, "config.json inválido", str(exc))
+            problems += 1
+
+    host = cfg.get("ollama_host", "http://localhost:11434")
+    model = cfg.get("model", "qwen3.5:9b")
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as resp:
+            tags = json.loads(resp.read().decode())
+        names = [m["name"] for m in tags.get("models", [])]
+        _line(True, f"Ollama acessível em {host}")
+        if any(n.split(":")[0] == model.split(":")[0] for n in names):
+            _line(True, f"Modelo {model} disponível")
+        else:
+            _line(None, f"Modelo {model} NÃO encontrado", f"tens: {', '.join(names[:5]) or 'nenhum'}")
+    except Exception:  # noqa: BLE001
+        _line(None, f"Ollama não responde em {host}", "a camada LLM fica desligada; a regex continua a funcionar")
+
+    print("\n── Configuração ──\n")
+    terms = cfg.get("client_terms", [])
+    if terms:
+        _line(True, f"client_terms: {len(terms)} termo(s)", ", ".join(terms[:8]))
+    else:
+        _line(None, "client_terms VAZIO", "nomes de cliente e de pessoa passam sem serem redigidos")
+    _line(
+        cfg.get("llm_on_tool_output") is True or None,
+        f"llm_on_tool_output: {cfg.get('llm_on_tool_output', False)}",
+        "" if cfg.get("llm_on_tool_output") else "nomes de pessoas em resultados NÃO são apanhados",
+    )
+
+    print("\n── Deteção (auto-teste) ──\n")
+    sys.path.insert(0, str(ROOT / "hooks"))
+    import detectors  # noqa: PLC0415
+
+    sample = "0010000006 | joao.silva@x.pt | 529.982.247-25 | 5105600787"
+    hits = detectors.find_pii(sample, terms)
+    kinds = {h.kind for h in hits}
+    ok = kinds >= {"Email", "CPF"} and "5105600787" not in {h.value for h in hits}
+    _line(ok, f"regex apanha PII e poupa IDs SAP", f"detectou: {', '.join(sorted(kinds)) or 'nada'}")
+    if not ok:
+        problems += 1
+
+    print("\n── Hooks: dispararam mesmo? ──\n")
+    events = auditlog.read_events()
+    if not events:
+        _line(None, "Log vazio", "instala o plugin, reinicia a sessão e volta a correr `guard-rail doctor`")
+    else:
+        fired = {e.get("point", "") for e in events}
+        actions = {e.get("action", "") for e in events}
+
+        armed = [e for e in events if e.get("action") == auditlog.ARMED]
+        if armed:
+            _line(True, f"SessionStart disparou ({len(armed)}×)", armed[-1].get("note", ""))
+        else:
+            _line(None, "SessionStart nunca disparou", "o plugin pode não estar instalado nesta superfície")
+
+        if "UserPromptSubmit" in fired:
+            _line(True, "UserPromptSubmit disparou")
+        else:
+            _line(None, "UserPromptSubmit ainda não bloqueou nada", "normal se nunca escreveste PII")
+
+        tool_points = sorted(p for p in fired if p not in {"UserPromptSubmit", "SessionStart"})
+        if auditlog.REDACTED in actions:
+            _line(True, "PostToolUse disparou e redigiu", f"ferramentas: {', '.join(tool_points[:6])}")
+        elif armed:
+            _line(
+                None,
+                "PostToolUse NUNCA redigiu nada",
+                "ou nenhuma ferramenta devolveu PII, ou este hook não dispara aqui — "
+                "testa: pede ao Claude para ler um ficheiro com um email lá dentro",
+            )
+        leaks = [e for e in events if e.get("action") == auditlog.NOT_REDACTED]
+        if leaks:
+            _line(False, f"{len(leaks)} evento(s) passaram EM CLARO", "ver `guard-rail log --leaks`")
+            problems += 1
+
+    print("\n── Veredicto ──\n")
+    if problems:
+        print(f"  {problems} problema(s) a corrigir antes de confiares nisto.\n")
+        return 1
+    print("  Sem problemas bloqueantes. Confirma acima o que ainda não disparou.\n")
+    return 0
+
+
+# -------------------------------------------------------------------------- main
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+
+    cmd, args = argv[0], argv[1:]
+
+    if cmd == "doctor":
+        return cmd_doctor(args)
+
+    if not CACHE.is_dir() and cmd != "local":
+        print("Nada registado ainda — o guard-rail não interveio nesta máquina.")
+        print("Corre `guard-rail doctor` para perceber porquê.")
+        return 0
+
+    if cmd == "log":
+        return cmd_log(args)
+    if cmd == "map":
+        return cmd_map(args)
+    if cmd == "local":
+        return cmd_local(args)
+    if cmd == "purge":
+        return cmd_purge(args)
+
+    print(f"Subcomando desconhecido: {cmd}\n", file=sys.stderr)
+    print(__doc__, file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
