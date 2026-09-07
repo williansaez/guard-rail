@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "guard-rail",
-  "description": "Guarda-corpos de dados pessoais (LGPD/RGPD) para o Claude Code e Cowork.",
+  "description": "Keep personal data out of the model, without stopping your work.",
   "owner": {
     "name": "Willian Saez",
     "url": "https://github.com/williansaez"
@@ -10,7 +10,7 @@
     {
       "name": "guard-rail",
       "source": "./",
-      "description": "Redige dados pessoais nos resultados das ferramentas com pseudónimos reversíveis, bloqueia prompts com PII, e regista todas as violações. Usa um modelo local via Ollama.",
+      "description": "Redacts personal data in tool results with reversible pseudonyms, blocks prompts carrying PII, and logs every violation. Uses a local model via Ollama.",
       "version": "2.1.0"
     }
   ]

@@ -1,0 +1,143 @@
+name: CI
+
+# The default GITHUB_TOKEN is writable. Nothing here writes to the repository:
+# the jobs check out, compile and run tests.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # 3.9 is the interpreter macOS ships. It is the job that matters:
+        # the hooks run under whatever `python3` resolves to on the user's
+        # machine, and a syntax error there breaks every single prompt.
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Compile every module
+        run: python -m compileall -q hooks bin/guard-rail
+
+      - name: Detection and false positives
+        run: python tests/test_detectors.py
+
+      - name: Redaction, pseudonym stability, latency
+        run: python tests/test_redact.py
+
+      - name: Audit log
+        run: python tests/test_auditlog.py
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Manifests are valid JSON
+        run: |
+          for f in .claude-plugin/marketplace.json .claude-plugin/plugin.json config.json; do
+            python3 -c "import json,sys; json.load(open('$f'))" || {
+              echo "invalid JSON: $f" >&2; exit 1; }
+            echo "ok  $f"
+          done
+
+      - name: Plugin and marketplace versions agree
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          plugin = json.load(open(".claude-plugin/plugin.json"))["version"]
+          entry = json.load(open(".claude-plugin/marketplace.json"))["plugins"][0]["version"]
+          if plugin != entry:
+              sys.exit(f"version mismatch: plugin.json {plugin} vs marketplace.json {entry}")
+          print(f"ok  both declare {plugin}")
+          PY
+
+      - name: Hook scripts referenced by the manifest exist and are runnable
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          manifest = json.load(open(".claude-plugin/plugin.json"))
+          missing = []
+          for event, groups in manifest.get("hooks", {}).items():
+              for group in groups:
+                  for hook in group.get("hooks", []):
+                      cmd = hook["command"]
+                      path = cmd.split("${CLAUDE_PLUGIN_ROOT}/")[1].rstrip('"')
+                      if not os.path.isfile(path):
+                          missing.append(f"{event}: {path}")
+                      else:
+                          print(f"ok  {event} -> {path}")
+          if missing:
+              sys.exit("hook scripts declared but absent:\n  " + "\n  ".join(missing))
+          PY
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The whole point of this project is that personal data does not leak.
+      # A real client name committed to a public repository would be the most
+      # embarrassing possible way to fail at that, so the build refuses it.
+      #
+      # The names live in .forbidden-names rather than inline: a literal here
+      # would make this step match its own source and fail every run.
+      - name: No real client names in the repository
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+
+          names = [
+              line.strip()
+              for line in pathlib.Path(".forbidden-names").read_text(encoding="utf-8").splitlines()
+              if line.strip() and not line.startswith("#")
+          ]
+          if not names:
+              print("ok  nothing on the forbidden list")
+              sys.exit(0)
+
+          skip_dirs = {".git", "__pycache__", ".github"}
+          skip_files = {".forbidden-names"}
+          hits = []
+
+          for path in pathlib.Path(".").rglob("*"):
+              if not path.is_file():
+                  continue
+              if skip_dirs & set(path.parts) or path.name in skip_files:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8", errors="ignore").lower()
+              except OSError:
+                  continue
+              for name in names:
+                  if name.lower() in text:
+                      hits.append(f"{path}: {name}")
+
+          if hits:
+              for hit in hits:
+                  print(f"::error::{hit}")
+              sys.exit("a real client name is present; use a fictional one (Northwind)")
+          print(f"ok  none of the {len(names)} forbidden name(s) found")
+          PY
+
+      - name: Shipped config carries no client terms
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          terms = json.load(open("config.json")).get("client_terms", [])
+          if terms:
+              sys.exit(f"config.json ships client_terms {terms}; they belong in ~/.config/guard-rail.json")
+          print("ok  client_terms is empty")
+          PY

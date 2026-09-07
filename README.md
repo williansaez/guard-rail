@@ -1,16 +1,45 @@
 # guard-rail
 
-Guarda-corpos de dados pessoais (LGPD / RGPD) para o Claude Code, com o teu `qwen3.5:9b` local.
+**Keep personal data out of the model, without stopping your work.**
 
-| Camada | Hook | O que faz |
-|---|---|---|
-| **Redação** | `PostToolUse` | Troca dados reais nos resultados das ferramentas por pseudónimos estáveis, antes do Claude os ver. Não bloqueia nada. |
-| **Bloqueio** | `UserPromptSubmit` | Bloqueia o prompt que *tu* escreves se contiver PII. É a única opção — este hook não consegue reescrever. |
-| **Auditoria** | ambos | Regista cada violação: data/hora com fuso, gravidade, ponto exato e tipo de dado. |
+[![CI](https://github.com/williansaez/guard-rail/actions/workflows/ci.yml/badge.svg)](https://github.com/williansaez/guard-rail/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 
-## O que acontece na prática
+guard-rail is a plugin for Claude Code. It hooks the point where tool results
+reach the model and replaces personal data — national IDs, emails, phone numbers,
+IBANs, addresses — with stable, reversible pseudonyms. The model sees
+`EMAIL_001`; you keep a local map back to the real value. Prompts you write
+yourself are checked too, and blocked when they carry personal data, because that
+hook cannot rewrite text.
 
-Corres uma query no SAP que devolve dados reais:
+Detection is regex with check-digit validation, so document numbers and system
+identifiers survive untouched. An optional local model, served by Ollama, covers
+free-text names the regex cannot reach. Nothing leaves your machine.
+
+> **Redaction is not a guarantee.** Names in free text pass through by default,
+> results above a size limit pass uninspected, and a plugin whose hooks never fire
+> protects nothing while looking installed. Read
+> [What this tool does not protect](SECURITY.md#what-this-tool-does-not-protect)
+> before you rely on it, and run `guard-rail doctor` after installing.
+
+## Table of contents
+
+- [What it looks like](#what-it-looks-like)
+- [The audit log](#the-audit-log)
+- [Status](#status)
+- [Install](#install)
+- [Prove it works](#prove-it-works)
+- [Commands](#commands)
+- [Configuration](#configuration)
+- [Performance](#performance)
+- [Testing](#testing)
+- [How it works](#how-it-works)
+- [License](#license)
+
+## What it looks like
+
+A query against a business system returns real data:
 
 ```
 LIFNR      | NAME1              | EMAIL                  | CPF            | BELNR
@@ -19,7 +48,7 @@ LIFNR      | NAME1              | EMAIL                  | CPF            | BELN
 0010000012 | Norte Distribuicao | ana.costa@cliente.pt   | 111.444.777-35 | 5105600790
 ```
 
-O Claude recebe isto:
+The model receives this instead:
 
 ```
 LIFNR      | NAME1              | EMAIL      | CPF     | BELNR
@@ -28,23 +57,33 @@ LIFNR      | NAME1              | EMAIL      | CPF     | BELNR
 0010000012 | Norte Distribuicao | EMAIL_002  | CPF_002 | 5105600790
 ```
 
-- **Os IDs SAP sobrevivem intactos.** `0010000006`, `5105600787`, os nomes das colunas. Sem isso o resultado era inútil.
-- **Os pseudónimos são estáveis.** O mesmo email nas duas primeiras linhas é `EMAIL_001` nas duas — o Claude percebe que são a mesma entidade. `529.982.247-25` e `52998224725` partilham rótulo: a normalização ignora formatação.
-- **Tu consegues voltar atrás.**
+Three things are happening.
 
-```bash
+**System identifiers survive.** Supplier numbers, document numbers, column names.
+Redacting those would make the result useless to work with, so every numeric
+detector validates a check digit before it fires.
+
+**Pseudonyms are stable.** The same email is `EMAIL_001` on both rows, so the
+model can still tell those two documents belong to one person and reason about
+duplicates. `529.982.247-25` and `52998224725` share a label too — formatting is
+normalised before comparison.
+
+**You can go back.**
+
+```console
 $ guard-rail map EMAIL_001
 joao.silva@cliente.pt
 
-$ guard-rail map -t "Corrige o registo de EMAIL_001, o CPF_001 está mal"
-Corrige o registo de joao.silva@cliente.pt, o 529.982.247-25 está mal
+$ guard-rail map -t "the record for EMAIL_001 is duplicated"
+the record for joao.silva@cliente.pt is duplicated
 ```
 
-## O log de violações
+## The audit log
 
-Cada intervenção fica registada em `~/.cache/guard-rail/violations.jsonl` — uma linha JSON por evento, appendável, greppável, pronta para um SIEM.
+Every intervention is recorded in `~/.cache/guard-rail/violations.jsonl` — one
+JSON object per line, appendable, greppable, ready for a SIEM.
 
-```bash
+```console
 $ guard-rail log
 
 🔴 2026-09-07 08:12:15  redigido           mcp__abap-adt__runQuery
@@ -53,236 +92,190 @@ $ guard-rail log
 🔴 2026-09-07 08:12:15  BLOQUEADO          UserPromptSubmit
      • CPF: 1×  —
 🔴 2026-09-07 08:12:15  PASSOU EM CLARO    mcp__abap-adt__tableContents
-     ↳ resultado com 965000 chars excede max_output_chars=400000; passou sem inspecao
+     ↳ resultado com 965000 chars excede max_output_chars=400000
 ```
 
-```bash
-$ guard-rail log --summary
-
-Por ponto de violação
-
-  mcp__abap-adt__runQuery       redigido 1
-  UserPromptSubmit              BLOQUEADO 1
-  mcp__abap-adt__tableContents  PASSOU EM CLARO 1
-
-Por tipo de dado
-
-  CPF    3
-  Email  2
-
-⚠️  1 evento(s) em que dados passaram EM CLARO — ver `guard-rail log --leaks`
-```
-
-### O log nunca contém o valor real
-
-Guarda o **pseudónimo**, não o dado. Se guardasse o valor, o ficheiro de auditoria passaria a ser ele próprio um depósito de PII — pior que o original, porque cresce sem limite e ninguém se lembra dele. Para chegar ao valor real cruzas com o mapa: `guard-rail map EMAIL_001`. Há um teste dedicado a garantir isto.
-
-### Quatro tipos de evento
-
-| Ação | Significado |
+| Action | Meaning |
 |---|---|
-| `redacted` | Dado substituído por pseudónimo. O trabalho continuou. |
-| `blocked` | Prompt travado. Nada saiu da máquina. |
-| `not_redacted` | **Dado passou EM CLARO.** É o evento que interessa auditar — vê `--leaks`. |
-| `degraded` | Controlo a funcionar abaixo do previsto (Ollama em baixo). Gravidade `INFO`, não é violação, mas permite dizer depois "nesta janela o modelo local esteve offline". |
+| `redacted` | Value replaced by a pseudonym. Work continued. |
+| `blocked` | Prompt stopped. Nothing left the machine. |
+| `not_redacted` | **Data passed in the clear.** The event worth investigating. |
+| `degraded` | Local model unavailable; only the regex layer was active. |
+| `armed` | A session started with hooks running. |
 
-### Filtros
+The log stores pseudonyms, never real values. A log holding the data would be a
+worse repository than the original: it grows without bound and nobody remembers
+it exists. Cross-reference with `guard-rail map` when you need the value.
 
 ```bash
 guard-rail log --today
-guard-rail log --since 2026-09-01
-guard-rail log --severity ALTO
-guard-rail log --leaks          # só o que passou em claro
-guard-rail log --summary
-guard-rail log --json           # saída crua
-guard-rail log -n 100
+guard-rail log --leaks       # only what passed in the clear
+guard-rail log --summary     # aggregated by violation point
+guard-rail log --json
 ```
 
-## Estado: o que está verificado e o que não está
+## Status
 
-Isto importa mais que a lista de funcionalidades. Um plugin de privacidade que falha em silêncio é **pior que não ter plugin nenhum**, porque passas a confiar numa proteção que não existe.
-
-| | Estado |
+| | State |
 |---|---|
-| Deteção, redação, pseudónimos, log | ✅ **85 testes automáticos**, verdes |
-| Compatível com Python 3.9 (o do macOS) | ✅ verificado — `from __future__ import annotations` em todos os módulos |
-| Hooks disparam no Claude Code CLI | ⚠️ **não verificado por mim** — corre `guard-rail doctor` |
-| Hooks disparam no Cowork | ⚠️ **parcialmente** — ver abaixo |
-| `updatedToolOutput` honrado pela tua versão | ⚠️ **não verificado** — o `doctor` diz-te |
-| Camada Ollama / qwen3.5:9b | ❌ **nunca correu** — não tinha Ollama no ambiente de testes |
+| Detection, redaction, pseudonyms, audit log | **85 automated tests**, green |
+| Python 3.9 compatibility | Verified in CI on 3.9–3.13, Linux and macOS |
+| Hooks firing in Claude Code CLI | **Unverified** — run `guard-rail doctor` |
+| Hooks firing in Cowork | **Unverified** |
+| Local Ollama layer | **Never exercised** — no Ollama in the test environment |
 
-### Sobre o Cowork
+The rows marked unverified are not modesty. They are the difference between code
+that is correct and protection that is running, and only your machine can settle
+it. `doctor` is built to answer exactly that question.
 
-Evidência directa: hooks `SessionStart` e `UserPromptSubmit` **funcionam** no Cowork — outro plugin instalado usa-os e vê-se a disparar. Por isso este plugin declara os hooks **inline no `plugin.json`**, que é o formato observado a funcionar, e não num `hooks/hooks.json` separado.
+## Install
 
-O que continua por confirmar é o `PostToolUse` — nenhum plugin que pude inspecionar o usa. Não invento a resposta: o plugin regista um evento `armed` a cada arranque, e o `doctor` compara isso com os eventos de redação. Se vires `armed` mas nunca `redacted` depois de leres ficheiros com dados pessoais, o `PostToolUse` não dispara nessa superfície.
-
-Nomes de ferramentas diferem: no Cowork o shell é `mcp__workspace__bash` (não `Bash`). Ambos estão cobertos.
-
-## Instalação
-
-### 1. Põe a pasta num sítio permanente
-
-A pasta de saída da sessão não serve — o plugin tem de continuar lá amanhã.
+Requires Python 3.9+ (macOS ships one). Ollama is optional.
 
 ```bash
-mkdir -p ~/claude-plugins
-cp -R guard-rail ~/claude-plugins/
+git clone https://github.com/williansaez/guard-rail.git ~/claude-plugins/guard-rail
 chmod +x ~/claude-plugins/guard-rail/bin/guard-rail
+ln -s ~/claude-plugins/guard-rail/bin/guard-rail /usr/local/bin/guard-rail
 ```
 
-### 2. Claude Code CLI
+**Claude Code CLI**
 
-A pasta é o seu próprio marketplace (`.claude-plugin/marketplace.json` com `source: "./"`), por isso aponta-se directamente a ela:
+```
+/plugin marketplace add williansaez/guard-rail
+/plugin install guard-rail@guard-rail
+```
+
+Or from the clone, which tracks your local edits:
 
 ```bash
 claude plugin marketplace add ~/claude-plugins/guard-rail
 claude plugin install guard-rail@guard-rail
 ```
 
-O ID é `plugin@marketplace` — ambos se chamam `guard-rail`.
+**Restart the session.** Hooks load at startup; without a restart the plugin
+appears installed and does nothing.
 
-### 3. Cowork
-
-Pelo gestor de plugins da aplicação, apontando a `~/claude-plugins/guard-rail`. O Cowork não partilha `~/.claude/` com o CLI: são duas instalações independentes, com dois logs separados.
-
-### 4. Reinicia a sessão
-
-Hooks só carregam no arranque. Sem isto, o plugin aparece instalado e não faz nada.
-
-### 5. Resto
+**Optional, for the local-model layer**
 
 ```bash
-ln -s ~/claude-plugins/guard-rail/bin/guard-rail /usr/local/bin/guard-rail
-ollama run qwen3.5:9b ""   # mantém o modelo quente
+ollama pull qwen3.5:9b
+ollama run qwen3.5:9b ""   # keeps it warm
 ```
 
-Depois preenche `client_terms` no `config.json`. **Não é opcional** — ver limitação nº 1.
-
-## Comandos dentro do Claude
-
-Depois de instalado, sem sair da conversa:
-
-| Comando | O que faz |
-|---|---|
-| `/guard-rail:doctor` | Diagnóstico — ambiente, Ollama, e se os hooks disparam mesmo |
-| `/guard-rail:log` | Violações registadas. Aceita `--today`, `--leaks`, `--summary` |
-| `/guard-rail:map EMAIL_001` | Traduz um pseudónimo de volta ao valor real |
-
-**Ressalva no Cowork:** o shell do Claude no Cowork é um Linux isolado, não o teu Mac — não vê o teu Ollama nem o teu ambiente Python. Os comandos detetam isso e dizem-to, em vez de reportarem falsos negativos. Para diagnóstico completo, corre no Terminal do Mac. No Claude Code CLI não há esta limitação.
-
-O `/guard-rail:map` nunca despeja o mapa completo na conversa — isso traria os dados reais para o histórico e desfazia o que o plugin existe para fazer. Resolve rótulos pontuais, só.
-
-## Primeiro uso: prova que funciona
+## Prove it works
 
 ```bash
 guard-rail doctor
 ```
 
-Antes de confiares, faz este teste de 2 minutos:
+Then the two-minute test that matters, because installation is not protection:
 
-1. Instala, **reinicia a sessão** (os hooks só carregam no arranque).
-2. Cria um ficheiro com um email lá dentro: `echo "contacto: teste@exemplo.pt" > /tmp/t.txt`
-3. Pede ao Claude para o ler.
-4. `guard-rail doctor` — se disser **"PostToolUse disparou e redigiu"**, está a proteger-te a sério. Se disser que nunca redigiu, não está.
+1. `echo "contact: test@example.pt" > /tmp/t.txt`
+2. Ask the model to read that file.
+3. `guard-rail doctor` again.
 
-```
-── Hooks: dispararam mesmo? ──
+If it reports **"PostToolUse disparou e redigiu"**, redaction is live. If it
+reports that nothing was ever redacted, the hook is not running on this surface
+and the redaction layer is decorative — find out now rather than during real work.
 
-  ✅ SessionStart disparou (3×)
-       superficie=cowork python=3.9.6
-  ✅ PostToolUse disparou e redigiu
-       ferramentas: mcp__workspace__bash, Read
-```
+## Commands
 
-## Limites — lê antes de confiar
+Inside a session:
 
-### 1. Nomes só são apanhados se os declarares
+| Command | Purpose |
+|---|---|
+| `/guard-rail:doctor` | Diagnose environment, Ollama, and whether hooks fire |
+| `/guard-rail:log` | Recorded violations; takes `--today`, `--leaks`, `--summary` |
+| `/guard-rail:map EMAIL_001` | Resolve one pseudonym |
 
-A regex apanha o que tem estrutura: CPF, NIF, email, telefone, IBAN, cartão, morada, código postal. **Não apanha nomes.** No exemplo acima, `Comercio Atlantico` e `Norte Distribuicao` passaram intactos — e um `NAME1` com nome de pessoa singular passaria na mesma.
+In a terminal: `guard-rail doctor | log | map | local | purge`.
 
-- **`client_terms`** no `config.json` — determinístico e auditável, mas só apanha o que escreveste lá.
-- **`llm_on_tool_output: true`** — o qwen extrai nomes de pessoas. Apanha o que não previste, mas é probabilístico e acrescenta latência a **cada** resultado MCP. Desligado por defeito; liga e mede.
+`guard-rail local <file>` runs a blocked prompt against your local model, so a
+question you could not ask the provider still gets answered.
 
-Não há terceira opção honesta. É a fronteira real do que esta ferramenta faz.
+Note that in Cowork the assistant's shell is an isolated Linux VM, not your Mac.
+The commands detect this and say so rather than reporting a false negative about
+your Ollama. For a full diagnosis there, use a terminal.
 
-### 2. Resultados grandes passam sem ser inspecionados
+## Configuration
 
-Acima de `max_output_chars` (400 000) o hook desiste. **Regista a violação como `not_redacted`** e avisa no stderr, mas o dado passa. Vê `guard-rail log --leaks` de vez em quando.
+`config.json` in the plugin directory, overridden by `~/.config/guard-rail.json`.
 
-### 3. O mapa em disco contém os dados reais
+| Key | Default | Notes |
+|---|---|---|
+| `block_at` | `MEDIO` | Severity that blocks a prompt. `ALTO` interrupts less. |
+| `client_terms` | `[]` | Names identifying your clients. **Put these in the override file** — this one is versioned. |
+| `redact_matchers` | `mcp__*__*`, `Read`, `Grep`, `Bash` | Tools whose results are inspected. |
+| `max_output_chars` | `400000` | Above this, results pass uninspected and log a `not_redacted` event. |
+| `llm_on_tool_output` | `false` | Local model on tool results. Catches names; costs latency on every call. Measure before enabling. |
+| `fail_closed` | `false` | When Ollama is down: `true` blocks defensively, `false` trusts the regex alone. |
 
-`~/.cache/guard-rail/map-*.json`, permissões `0600`. É a contrapartida de ser reversível.
+Disable entirely with `GUARD_RAIL_OFF=1`.
 
-```bash
-guard-rail purge 7     # apaga mapas e prompts com mais de 7 dias
-```
+## Performance
 
-`purge` apaga mapas e prompts guardados, mas **poda o log em vez de o apagar** — manter o histórico de violações é o objetivo dele.
+Redaction of a synthetic result dense with personal data, regex layer only:
 
-### 4. O prompt que tu escreves só pode ser bloqueado
-
-`UserPromptSubmit` não suporta reescrita — confirmado na documentação, é feature request aberta (issues #34390, #27365, #53330). Essa camada bloqueia com `exit 2` e entrega-te o comando para correres offline. Escape consciente: prefixa com `!ok`.
-
-### 5. NOTA-COLISÃO: números de 10 dígitos
-
-Documento SAP (`5105600787`) e telefone fixo BR sem formatação (`1132654321`) são ambos 10 dígitos. Números crus são tratados como ID de sistema — senão o teu trabalho normal era redigido todo. Telefone **formatado** (`(11) 3265-4321`) é apanhado.
-
-### 6. Não cobre tudo
-
-Matchers: `mcp__*__*`, `Read`, `Grep`, `Bash`. `WebFetch`, `Write` e ferramentas futuras ficam de fora até as pores em `redact_matchers`. Os **argumentos** de saída (`PreToolUse`) também não são filtrados — um CPF dentro de um `WHERE` enviado a um MCP remoto passa.
-
-## Latência medida
-
-Redação, output sintético denso em PII, sem LLM:
-
-| Tamanho | Tempo |
+| Size | Time |
 |---|---|
 | 1 KB | 18 ms |
 | 10 KB | 20 ms |
 | 50 KB | 28 ms |
 | 100 KB | 40 ms |
 | 200 KB | 62 ms |
-| 500 KB | 19 ms *(acima do limite — não inspecionado)* |
+| 500 KB | 19 ms *(above the limit — not inspected)* |
 
-~18 ms é o arranque do Python; a redação é linear no tamanho. Camada regex isolada: **0.02 ms**.
+About 18 ms of that is Python start-up. Redaction itself is linear in input size;
+the regex layer alone measures 0.02 ms. The `PostToolUse` hook runs on every tool
+call, so this budget is the constraint the design answers to.
 
-## Testes
-
-```bash
-python3 tests/test_detectors.py   # 21 — deteção e falsos positivos
-python3 tests/test_redact.py      # 28 — redação, estabilidade, latência
-python3 tests/test_auditlog.py    # 36 — log, filtros, e o log sem valores reais
-```
-
-85 asserções. Correm com `HOME` temporário, não tocam nos teus dados.
-
-## Desligar
+## Testing
 
 ```bash
-GUARD_RAIL_OFF=1 claude
+python3 tests/test_detectors.py   # 21 — detection and false positives
+python3 tests/test_redact.py      # 28 — redaction, stability, latency
+python3 tests/test_auditlog.py    # 36 — audit log, filters, PII absence
 ```
 
-Ou no `config.json`: `redact_tool_output: false`, `block_at: "ALTO"`, `use_llm: false`.
+No dependencies. The hook tests run the hooks as subprocesses under a temporary
+`HOME`, so they never touch a real map or log. CI runs everything on Python
+3.9–3.13 across Linux and macOS, validates the manifests, and fails the build if a
+real client name or a populated `client_terms` reaches the repository.
 
-## Estrutura
+## How it works
 
 ```
 guard-rail/
-├── .claude-plugin/plugin.json  ← hooks declarados inline, aqui
-├── config.json                 ← preenche client_terms
+├── .claude-plugin/         hooks declared inline in plugin.json
 ├── hooks/
-│   ├── heartbeat.py            ← SessionStart: prova que os hooks disparam
-│   ├── guard.py                ← UserPromptSubmit: bloqueia
-│   ├── redact.py               ← PostToolUse: redige
-│   ├── detectors.py            ← regex + dígitos de controlo, spans
-│   ├── pseudonyms.py           ← mapa estável e reversível
-│   ├── auditlog.py             ← registo JSONL de violações
-│   └── classifier.py           ← Ollama
-├── commands/                   ← /guard-rail:doctor · :log · :map
-│   ├── doctor.md
-│   ├── log.md
-│   └── map.md
-├── bin/guard-rail              ← doctor · log · map · local · purge
-└── tests/
+│   ├── heartbeat.py        SessionStart — proves hooks fire at all
+│   ├── guard.py            UserPromptSubmit — blocks
+│   ├── redact.py           PostToolUse — redacts via updatedToolOutput
+│   ├── detectors.py        regex, check digits, positional spans
+│   ├── pseudonyms.py       stable reversible map
+│   ├── auditlog.py         JSONL violation log
+│   └── classifier.py       Ollama
+├── skills/guard-rail/      teaches the model to read redacted output
+├── commands/               /guard-rail:doctor, :log, :map
+└── bin/guard-rail          console
 ```
+
+Two design decisions carry most of the weight.
+
+**Check digits, not just patterns.** A bare nine-digit regex would fire on every
+counter and internal ID in a query result. Validating the check digit is what
+lets the tool run against business data without corrupting it — a false positive
+here replaces a document number with a pseudonym and silently poisons the model's
+reasoning.
+
+**Redaction over blocking, wherever the API allows it.** `PostToolUse` can
+rewrite a result, so it does, and you keep working. `UserPromptSubmit` cannot —
+there is no `updatedPrompt` field — so it blocks and hands you an offline path
+instead. The asymmetry is imposed by the hook API, not chosen.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+Security policy and threat model: [SECURITY.md](SECURITY.md).
+Contributing, including the rule about validators: [CONTRIBUTING.md](CONTRIBUTING.md).

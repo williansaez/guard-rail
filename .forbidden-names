@@ -1,0 +1,4 @@
+# Nomes que nunca podem entrar no repositório.
+# O CI falha se algum aparecer fora deste ficheiro.
+# Um por linha; linhas com # são ignoradas.
+Highgate
