@@ -81,6 +81,18 @@ def log_lines(home: Path) -> list[dict]:
     return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
 
+def force_ollama_down(home: Path) -> None:
+    """
+    Escreve a configuração pessoal que os hooks lêem por último, apontando o
+    Ollama para uma porta onde nada escuta. A porta 1 é privilegiada: nenhum
+    processo do utilizador a pode ocupar, por isso a ligação é sempre recusada
+    de imediato — sem esperar pelo timeout.
+    """
+    path = home / ".config" / "guard-rail.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"ollama_host": "http://127.0.0.1:1"}), encoding="utf-8")
+
+
 QUERY = (
     "LIFNR      | EMAIL                  | CPF            | BELNR\n"
     "0010000006 | joao.silva@cliente.pt  | 529.982.247-25 | 5105600787\n"
@@ -156,7 +168,15 @@ def main() -> int:
         # --- degradação: Ollama em baixo -----------------------------------
         # Precisa de um prompt LIMPO e com ≥40 chars: só aí a camada LLM é
         # consultada. Com PII a regex decide sozinha e o Ollama nem é chamado.
-        print("\n=== controlo degradado (Ollama ausente) ===")
+        #
+        # A indisponibilidade é FORÇADA, não presumida: apontar o host para uma
+        # porta fechada torna o caso determinístico. Antes disto o teste passava
+        # por acidente em CI (onde não há Ollama) e falhava na máquina de quem
+        # desenvolve (onde há) — a ler "modelo respondeu coisa não-JSON" como se
+        # fosse "modelo inacessível". Um teste que depende do ambiente não prova
+        # nada sobre o código.
+        force_ollama_down(home)
+        print("\n=== controlo degradado (Ollama inacessível) ===")
         code, _, err = run("guard.py", {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "s1",
