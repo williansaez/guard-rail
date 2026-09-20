@@ -29,6 +29,7 @@ REDACTED = "redacted"  # dado substituido por pseudonimo, trabalho continuou
 NOT_REDACTED = "not_redacted"  # PASSOU EM CLARO — o caso que interessa auditar
 DEGRADED = "degraded"  # controlo a funcionar abaixo do previsto (ex.: Ollama em baixo)
 ARMED = "armed"  # sessao arrancou; serve para provar que os hooks disparam
+TOGGLED = "toggled"  # o proprio utilizador ligou ou desligou a proteccao
 
 MAX_FINDINGS_PER_EVENT = 50
 

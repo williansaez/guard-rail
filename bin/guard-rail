@@ -14,6 +14,10 @@ guard-rail — consola do plugin.
   guard-rail map EMAIL_001          valor real desse rótulo
   guard-rail map -t "texto"         troca pseudónimos pelos valores reais
 
+  guard-rail status                 ligado ou desligado, e porque
+  guard-rail off                    desliga a proteção (fica assim entre sessões)
+  guard-rail on                     volta a ligar
+
   guard-rail local <ficheiro>       corre um prompt bloqueado no modelo local
   guard-rail local "pergunta"
 
@@ -42,6 +46,7 @@ sys.path.insert(0, str(ROOT / "hooks"))
 
 import auditlog  # noqa: E402
 import pseudonyms  # noqa: E402
+import state  # noqa: E402
 
 CACHE = pseudonyms.CACHE_DIR
 
@@ -51,6 +56,8 @@ ACTION_LABEL = {
     auditlog.REDACTED: "redigido",
     auditlog.NOT_REDACTED: "PASSOU EM CLARO",
     auditlog.DEGRADED: "controlo degradado",
+    auditlog.ARMED: "sessão armada",
+    auditlog.TOGGLED: "interruptor",
 }
 
 
@@ -248,6 +255,69 @@ def cmd_purge(args: list[str]) -> int:
     return 0
 
 
+# --------------------------------------------------------------- on / off / status
+
+
+def _print_status() -> bool:
+    enabled, source = state.status(ROOT)
+    icon = "🟢" if enabled else "🔴"
+    word = "LIGADO" if enabled else "DESLIGADO"
+    print(f"\n  {icon} guard-rail {word}")
+    print(f"       origem: {state.SOURCE_LABEL[source]}\n")
+    if not enabled:
+        if source == state.SOURCE_ENV:
+            print("  Nada é verificado neste processo. Tira GUARD_RAIL_OFF do ambiente para voltar.\n")
+        else:
+            print("  Prompts não são verificados e resultados de ferramentas passam em claro.")
+            print("  Volta a ligar com: guard-rail on\n")
+    return enabled
+
+
+def cmd_status(args: list[str]) -> int:
+    _print_status()
+    return 0
+
+
+def _toggle(enabled: bool) -> int:
+    current, source = state.status(ROOT)
+
+    if source == state.SOURCE_ENV and not enabled:
+        print("Já está desligado por GUARD_RAIL_OFF=1 neste processo.", file=sys.stderr)
+
+    path = state.set_enabled(enabled)
+
+    # Ligar e desligar uma proteccao de privacidade e' facto auditavel: sem
+    # isto, ninguem consegue dizer depois se a janela em que um dado escapou
+    # foi uma falha do plugin ou uma decisao de quem o usava.
+    auditlog.record(
+        severity="INFO",
+        action=auditlog.TOGGLED,
+        point="CLI",
+        note=f"guard-rail {'LIGADO' if enabled else 'DESLIGADO'} pelo utilizador ({path})",
+    )
+
+    if enabled:
+        print(f"\n  🟢 guard-rail LIGADO   → {path}\n")
+        if os.environ.get("GUARD_RAIL_OFF") == "1":
+            print("  ⚠️  GUARD_RAIL_OFF=1 continua no ambiente deste shell e sobrepõe-se a isto.\n")
+    else:
+        print(f"\n  🔴 guard-rail DESLIGADO   → {path}")
+        print("     Prompts deixam de ser verificados e dados pessoais passam em claro.")
+        print("     Volta a ligar com: guard-rail on\n")
+
+    if current == enabled:
+        print(f"  (já estava {'ligado' if enabled else 'desligado'}; nada mudou)\n")
+    return 0
+
+
+def cmd_on(args: list[str]) -> int:
+    return _toggle(True)
+
+
+def cmd_off(args: list[str]) -> int:
+    return _toggle(False)
+
+
 # ------------------------------------------------------------------------ doctor
 
 
@@ -266,7 +336,13 @@ def cmd_doctor(args: list[str]) -> int:
     """
     problems = 0
 
-    print("\n── Ambiente ──\n")
+    print("\n── Interruptor ──")
+    if not _print_status():
+        # Desligado nao e' avaria, e' escolha — mas o doctor existe para
+        # nao deixar ninguem julgar-se protegido sem o estar.
+        problems += 1
+
+    print("── Ambiente ──\n")
     _line(sys.version_info >= (3, 9), f"Python {sys.version.split()[0]}", str(sys.executable))
     if sys.version_info < (3, 9):
         problems += 1
@@ -376,6 +452,12 @@ def main(argv: list[str]) -> int:
 
     if cmd == "doctor":
         return cmd_doctor(args)
+    if cmd == "status":
+        return cmd_status(args)
+    if cmd == "on":
+        return cmd_on(args)
+    if cmd == "off":
+        return cmd_off(args)
 
     if not CACHE.is_dir() and cmd != "local":
         print("Nada registado ainda — o guard-rail não interveio nesta máquina.")

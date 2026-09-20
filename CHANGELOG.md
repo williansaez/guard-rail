@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-09-20
+
+### Added
+
+- An on/off switch: `guard-rail on`, `guard-rail off` and `guard-rail status`,
+  plus the slash command `/guard-rail:toggle`. The state is written to
+  `~/.config/guard-rail.json` rather than the plugin's `config.json`, which is
+  versioned and replaced on upgrade. `GUARD_RAIL_OFF=1` still overrides both,
+  for a single process.
+- Turning the guard off is recorded rather than silent: a `toggled` event in the
+  audit log, a line in the transcript at `SessionStart`, and a failed check in
+  `guard-rail doctor`. A window with no redactions can now be told apart from a
+  window with no protection.
+- `tests/test_state.py`, asserting that disabled really means disabled (the
+  prompt hook passes PII through, the tool hook stops rewriting), that enabling
+  restores both, that the personal config file survives a toggle with its
+  `client_terms` intact, and that a corrupted config leaves the guard on.
+
+### Fixed
+
+- The audit log suite no longer depends on Ollama being absent. It asserted a
+  degraded-control event carrying an "Ollama unreachable" note, which held in CI
+  and failed on any machine where Ollama was actually running — there the model
+  replied with something that was not JSON, a different degradation with a
+  different note. The test now forces the failure by pointing the host at a
+  closed port, so it proves the same thing in both environments, and stops
+  making a live model call.
+
 ## [2.1.0] - 2026-09-07
 
 ### Added

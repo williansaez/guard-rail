@@ -189,8 +189,9 @@ Inside a session:
 | `/guard-rail:doctor` | Diagnose environment, Ollama, and whether hooks fire |
 | `/guard-rail:log` | Recorded violations; takes `--today`, `--leaks`, `--summary` |
 | `/guard-rail:map EMAIL_001` | Resolve one pseudonym |
+| `/guard-rail:toggle on\|off` | Turn the guard on or off; no argument shows the state |
 
-In a terminal: `guard-rail doctor | log | map | local | purge`.
+In a terminal: `guard-rail doctor | log | map | status | on | off | local | purge`.
 
 `guard-rail local <file>` runs a blocked prompt against your local model, so a
 question you could not ask the provider still gets answered.
@@ -212,7 +213,28 @@ your Ollama. For a full diagnosis there, use a terminal.
 | `llm_on_tool_output` | `false` | Local model on tool results. Catches names; costs latency on every call. Measure before enabling. |
 | `fail_closed` | `false` | When Ollama is down: `true` blocks defensively, `false` trusts the regex alone. |
 
-Disable entirely with `GUARD_RAIL_OFF=1`.
+### Turning it off, and back on
+
+```
+guard-rail status     # on or off, and what decided it
+guard-rail off        # stops blocking and redacting
+guard-rail on
+```
+
+The switch writes `enabled` to `~/.config/guard-rail.json`, so it survives
+restarts and plugin upgrades — `config.json` is versioned and replaced, which is
+why the switch does not live there. It applies from the next hook call onward;
+restart the session if you want certainty.
+
+`GUARD_RAIL_OFF=1` still works and overrides the file, for one process only.
+
+Turning the guard off is a decision, not a silent state: `SessionStart` says so
+in the transcript, `guard-rail doctor` reports it as a problem, and the switch
+itself lands in the audit log as a `toggled` event. That way a window with no
+redactions can be told apart from a window with no protection.
+
+Before disabling everything, consider the narrower escapes: `!ok ` on a single
+prompt, or `block_at: "ALTO"` to interrupt less often.
 
 ## Performance
 

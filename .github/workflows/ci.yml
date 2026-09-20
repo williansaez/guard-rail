@@ -40,6 +40,9 @@ jobs:
       - name: Audit log
         run: python tests/test_auditlog.py
 
+      - name: On/off switch
+        run: python tests/test_state.py
+
   manifests:
     runs-on: ubuntu-latest
     steps:

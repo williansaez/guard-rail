@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import auditlog  # noqa: E402
+import state  # noqa: E402
 
 
 def detect_surface() -> str:
@@ -46,14 +47,26 @@ def main() -> int:
     except (json.JSONDecodeError, ValueError):
         data = {}
 
+    # O estado do interruptor entra no log do arranque: sem isto, uma sessao
+    # inteira com o guard-rail desligado seria indistinguivel de uma sessao
+    # protegida em que nada foi apanhado.
+    enabled, source = state.status(Path(os.environ.get("CLAUDE_PLUGIN_ROOT", Path(__file__).parent.parent)))
+    estado = "ligado" if enabled else f"DESLIGADO({source})"
+
     auditlog.record(
         severity="INFO",
         action=auditlog.ARMED,
         point="SessionStart",
         session_id=data.get("session_id", ""),
         cwd=data.get("cwd", ""),
-        note=f"superficie={detect_surface()} python={sys.version.split()[0]}",
+        note=f"estado={estado} superficie={detect_surface()} python={sys.version.split()[0]}",
     )
+
+    if not enabled:
+        # SessionStart escreve no contexto pelo stdout. Uma linha so, para
+        # quem esqueceu o interruptor desligado nao descobrir tarde demais.
+        print("[guard-rail] DESLIGADO — nada e' verificado nem redigido nesta sessao. `guard-rail on` para voltar.")
+
     return 0
 
 

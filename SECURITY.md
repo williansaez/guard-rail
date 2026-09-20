@@ -91,9 +91,12 @@ ordinary work: a query returning customer rows, a file containing contact
 details, a prompt written without thinking. The user is not an adversary; they
 want the protection and would rather not think about it.
 
-**Out of scope.** A user deliberately bypassing the guard — `!ok`, disabling the
-plugin, `GUARD_RAIL_OFF=1`, pasting data into a surface the hooks do not cover.
-These overrides exist on purpose; the tool is a guard rail, not a cage.
+**Out of scope.** A user deliberately bypassing the guard — `!ok`, `guard-rail
+off`, `GUARD_RAIL_OFF=1`, pasting data into a surface the hooks do not cover.
+These overrides exist on purpose; the tool is a guard rail, not a cage. They are
+not silent, though: `guard-rail off` is written to the audit log, announced at
+session start, and reported by `doctor`, so a period without protection can
+always be reconstructed after the fact.
 
 Also out of scope: a compromised machine (the map and log are readable by
 anything running as you), a malicious MCP server, and the model provider's own

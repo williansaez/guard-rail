@@ -1,4 +1,5 @@
 {
+  "_interruptor": "Nao mexas aqui para desligar: este ficheiro e substituido a cada actualizacao. Usa `guard-rail off`, que escreve em ~/.config/guard-rail.json e sobrepoe esta chave.",
   "enabled": true,
 
   "_bloqueio_do_prompt": "guard.py — UserPromptSubmit",
