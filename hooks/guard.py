@@ -79,6 +79,27 @@ def stash_prompt(prompt: str) -> Path:
     return path
 
 
+WARN_EVERY_SECONDS = 30 * 60
+
+
+def should_warn(session_id: str) -> bool:
+    """
+    Um aviso de degradacao por sessao, e de novo se a falha durar mais de
+    30 min. Um por prompt seria ruido; um so por sessao voltaria a esconder
+    uma falha que dura horas. O log de auditoria regista todas na mesma.
+    """
+    safe_id = "".join(c for c in session_id if c.isalnum() or c in "-_") or "sem-sessao"
+    marker = auditlog.LOG_DIR / f"degraded-{safe_id}"
+    try:
+        if marker.exists() and time.time() - marker.stat().st_mtime < WARN_EVERY_SECONDS:
+            return False
+        auditlog.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        return True  # sem marcador, avisar a mais e' melhor que avisar a menos
+    return True
+
+
 def build_block_message(level: str, findings: list[str], stash: Path, warning: str | None) -> str:
     icon = "🔴" if level == "ALTO" else "🟡"
     label = "dados pessoais" if level == "ALTO" else "dados de cliente"
@@ -190,8 +211,9 @@ def main() -> int:
         print(build_block_message(level, findings, stash, warning), file=sys.stderr)
         return 2
 
-    if warning:
-        print(f"⚠️  guard-rail: {warning}", file=sys.stderr)
+    # stderr com exit 0 nao chega ao utilizador; systemMessage em stdout chega.
+    if warning and should_warn(session_id):
+        print(json.dumps({"systemMessage": f"⚠️ guard-rail: {warning}"}, ensure_ascii=False))
 
     return 0
 

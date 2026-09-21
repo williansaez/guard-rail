@@ -177,13 +177,15 @@ def main() -> int:
         # nada sobre o código.
         force_ollama_down(home)
         print("\n=== controlo degradado (Ollama inacessível) ===")
-        code, _, err = run("guard.py", {
+        code, out, err = run("guard.py", {
             "hook_event_name": "UserPromptSubmit",
             "session_id": "s1",
             "prompt": "explica-me como funciona a activação de objectos no transporte XS4K903815",
         }, home)
         check("prompt limpo passa mesmo com Ollama em baixo (exit 0)", code == 0, err)
-        check("avisa no stderr que ficou só com a regex", "regex" in err, err)
+        # stderr com exit 0 não chega ao utilizador: o aviso tem de ser um
+        # systemMessage em stdout. Ver tests/test_llm_layer.py.
+        check("avisa (systemMessage) que ficou só com a regex", "regex" in out, out)
 
         degraded = [e for e in log_lines(home) if e["action"] == "degraded"]
         check("degradação registada", len(degraded) >= 1, str(degraded))

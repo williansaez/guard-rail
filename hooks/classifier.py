@@ -57,6 +57,9 @@ def classify(
         "prompt": f"<texto>\n{text}\n</texto>",
         "stream": False,
         "format": "json",
+        # O qwen3.5 raciocina por omissao: sem isto a saida vai para
+        # `thinking` e `response` chega vazio — JSON "invalido" em todo o prompt.
+        "think": False,
         "keep_alive": keep_alive,
         "options": {
             "num_predict": 128,
@@ -134,6 +137,7 @@ def extract_entities(
         "prompt": f"<texto>\n{text}\n</texto>",
         "stream": False,
         "format": "json",
+        "think": False,  # ver classify()
         "keep_alive": keep_alive,
         "options": {"num_predict": 256, "temperature": 0, "top_p": 0.1},
     }

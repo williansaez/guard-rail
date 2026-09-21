@@ -1,6 +1,6 @@
 {
   "name": "guard-rail",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Keep personal data (LGPD/GDPR) out of the model. Redacts tool results with reversible pseudonyms, blocks prompts carrying PII, and logs every violation.",
   "author": {
     "name": "Willian Saez",

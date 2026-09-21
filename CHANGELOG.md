@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-09-21
+
+### Fixed
+
+- The local-model layer never worked with `qwen3.5:9b`. It is a reasoning
+  model: without `"think": false` Ollama returns its output in the `thinking`
+  field and leaves `response` empty, so every prompt was logged as "Resposta do
+  modelo nao era JSON valido" and decided by the regex alone. Both
+  `classify()` and `extract_entities()` now send `"think": false`.
+- The degraded-control warning was printed to stderr with exit 0, which Claude
+  Code does not show to the user, so a layer that was down for every prompt
+  went unnoticed. It is now a `systemMessage` on stdout, shown once per
+  session and again if the failure lasts beyond 30 minutes. The audit log
+  still records every degradation.
+
+### Added
+
+- `tests/test_llm_layer.py`, covering the request payload and the warning's
+  visibility and rate limit, wired into CI.
+
 ## [2.2.0] - 2026-09-20
 
 ### Added

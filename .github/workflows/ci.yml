@@ -43,6 +43,9 @@ jobs:
       - name: On/off switch
         run: python tests/test_state.py
 
+      - name: LLM layer request and visible degradation
+        run: python tests/test_llm_layer.py
+
   manifests:
     runs-on: ubuntu-latest
     steps:

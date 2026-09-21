@@ -11,7 +11,7 @@
       "name": "guard-rail",
       "source": "./",
       "description": "Redacts personal data in tool results with reversible pseudonyms, blocks prompts carrying PII, and logs every violation. Uses a local model via Ollama.",
-      "version": "2.2.0"
+      "version": "2.2.1"
     }
   ]
 }
