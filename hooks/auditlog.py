@@ -30,6 +30,7 @@ NOT_REDACTED = "not_redacted"  # PASSOU EM CLARO — o caso que interessa audita
 DEGRADED = "degraded"  # controlo a funcionar abaixo do previsto (ex.: Ollama em baixo)
 ARMED = "armed"  # sessao arrancou; serve para provar que os hooks disparam
 TOGGLED = "toggled"  # o proprio utilizador ligou ou desligou a proteccao
+UNCERTAIN = "uncertain"  # o classificador respondeu com pouca confianca; a regex decidiu
 
 MAX_FINDINGS_PER_EVENT = 50
 

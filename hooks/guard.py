@@ -12,7 +12,8 @@ Fluxo:
   1. Escape hatch `!ok` -> passa sem verificar
   2. Mascara identificadores de sistema (SAP, ABAP, tickets)
   3. Regex com digito de controlo -> decide sozinha na maioria dos casos
-  4. So se a regex nao deu ALTO, consulta o qwen3.5:9b local
+  4. So se a regex nao deu ALTO, consulta o modelo escolhido
+     (Ollama local por omissao, ou Jev se o utilizador o escolheu)
   5. ALTO ou MEDIO -> bloqueia e entrega o comando para correr offline
 """
 
@@ -39,6 +40,8 @@ DEFAULTS = {
     "enabled": True,
     "model": "qwen3.5:9b",
     "ollama_host": "http://localhost:11434",
+    "jev_host": classifier.JEV_DEFAULT_HOST,
+    "jev_model": classifier.JEV_DEFAULT_MODEL,
     "timeout_seconds": 8,
     "keep_alive": "30m",
     "use_llm": True,
@@ -67,6 +70,9 @@ def load_config() -> dict:
                 pass
     if os.environ.get("GUARD_RAIL_OFF") == "1":
         cfg["enabled"] = False
+    env_model = os.environ.get("GUARD_RAIL_MODEL", "").strip()
+    if env_model:
+        cfg["model"] = env_model
     return cfg
 
 
@@ -167,17 +173,40 @@ def main() -> int:
         and level != "ALTO"
         and len(masked) >= cfg["min_chars_for_llm"]
     ):
-        llm_level, llm_findings, err, _meta = classifier.classify(
+        llm_level, llm_findings, err, meta = classifier.classify(
             masked,
             model=cfg["model"],
             host=cfg["ollama_host"],
             timeout=cfg["timeout_seconds"],
             keep_alive=cfg["keep_alive"],
+            jev_host=cfg["jev_host"],
+            jev_model=cfg["jev_model"],
         )
-        if err:
+        # A etiqueta diz ao utilizador, e ao log, quem decidiu — e portanto
+        # se o texto residual saiu da maquina (jev) ou nao (modelo local).
+        is_jev = meta.get("backend") == "jev"
+        label = "jev" if is_jev else "modelo local"
+        kind = "Jev" if is_jev else "Modelo local"
+
+        if err and meta.get("uncertain"):
+            # Resposta valida mas pouco confiante. Nao e' avaria: fica no log
+            # com accao propria, e fail_closed decide se o portao fecha.
+            auditlog.record(
+                severity="INFO",
+                action=auditlog.UNCERTAIN,
+                point="UserPromptSubmit",
+                session_id=session_id,
+                cwd=cwd,
+                note=err,
+            )
+            if cfg["fail_closed"]:
+                level = detectors.max_level(level, "MEDIO")
+                findings.append("Jev incerto (fail_closed)")
+                audit_items.append(("Jev incerto", None))
+        elif err:
             warning = f"{err} — decisão tomada só pela regex."
             # Um controlo a funcionar abaixo do previsto e' facto auditavel:
-            # permite dizer depois "nesta janela o modelo local esteve em baixo".
+            # permite dizer depois "nesta janela o classificador esteve em baixo".
             auditlog.record(
                 severity="INFO",
                 action=auditlog.DEGRADED,
@@ -188,12 +217,12 @@ def main() -> int:
             )
             if cfg["fail_closed"]:
                 level = detectors.max_level(level, "MEDIO")
-                findings.append("Classificador local indisponível (fail_closed)")
+                findings.append("Classificador indisponível (fail_closed)")
                 audit_items.append(("Classificador indisponível", None))
         else:
             level = detectors.max_level(level, llm_level)
-            findings += [f"{f} (modelo local)" for f in llm_findings]
-            audit_items += [("Modelo local", None) for _ in llm_findings]
+            findings += [f"{f} ({label})" for f in llm_findings]
+            audit_items += [(kind, None) for _ in llm_findings]
 
     # 5. Decisao
     if LEVEL_ORDER[level] >= LEVEL_ORDER[cfg["block_at"]]:

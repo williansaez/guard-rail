@@ -45,8 +45,11 @@ def check(desc: str, ok: bool, detail: str = "") -> None:
             print(f"       {detail}")
 
 
-def run(payload: dict, home: Path) -> tuple[int, str, str]:
+def run(payload: dict, home: Path, **extra) -> tuple[int, str, str]:
     env = {**os.environ, "HOME": str(home), "CLAUDE_PLUGIN_ROOT": str(ROOT)}
+    for var in ("GUARD_RAIL_OFF", "GUARD_RAIL_MODEL", "TYPESAFE_API_KEY", "CLAUDE_PLUGIN_OPTION_TYPESAFE_API_KEY"):
+        env.pop(var, None)
+    env.update(extra)
     proc = subprocess.run(
         [sys.executable, str(ROOT / "hooks" / "guard.py")],
         input=json.dumps(payload),
@@ -82,6 +85,69 @@ def degraded_count(home: Path) -> int:
         return 0
     lines = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
     return sum(1 for e in lines if e["action"] == "degraded")
+
+
+import http.server
+import threading
+
+
+class _JevHandler(http.server.BaseHTTPRequestHandler):
+    """Jev falso: devolve `answers` fixas e guarda tudo o que recebeu."""
+
+    answers: dict = {}
+    status: int = 200
+    received: list = []
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        type(self).received.append({"path": self.path, "auth": self.headers.get("Authorization", ""), "body": body})
+        data = json.dumps({"answers": type(self).answers}).encode("utf-8")
+        self.send_response(type(self).status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):  # silencio no output dos testes
+        pass
+
+
+def fake_jev(answers: dict, status: int = 200) -> tuple[http.server.HTTPServer, str]:
+    _JevHandler.answers = answers
+    _JevHandler.status = status
+    _JevHandler.received = []
+    server = http.server.HTTPServer(("127.0.0.1", 0), _JevHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}/v1/systemone"
+
+
+def jev_config(home: Path, jev_url: str, **extra) -> None:
+    """
+    model=jev apontado ao Jev falso. O ollama_host aponta ao MESMO servidor:
+    se algum hook falar com o Ollama, o pedido aparece em `received` com um
+    campo `prompt`, e o teste apanha-o.
+    """
+    path = home / ".config" / "guard-rail.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cfg = {"model": "jev", "jev_host": jev_url, "ollama_host": jev_url.rsplit("/v1", 1)[0]}
+    cfg.update(extra)
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+
+
+def events(home: Path) -> list[dict]:
+    path = home / ".cache" / "guard-rail" / "violations.jsonl"
+    if not path.is_file():
+        return []
+    return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+
+def ollama_requests() -> list[dict]:
+    return [r for r in _JevHandler.received if "prompt" in r["body"]]
+
+
+def jev_requests() -> list[dict]:
+    return [r for r in _JevHandler.received if "questions" in r["body"]]
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +357,96 @@ def test_jev_client() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1c. guard.py com model=jev: etiquetas, incerteza, fail_closed, falhas
+# ---------------------------------------------------------------------------
+
+KEY = {"CLAUDE_PLUGIN_OPTION_TYPESAFE_API_KEY": "chave-de-teste"}
+MEDIO_PROMPT = "o cliente Northwind quer migrar a conta para a nova estrutura de centros de custo até março"
+
+
+def test_guard_with_jev() -> None:
+    print("\n=== guard.py com model=jev: ALTO confiante bloqueia com etiqueta (jev) ===")
+    server, url = fake_jev(JEV_CONFIDENT["answers"])
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            jev_config(home, url)
+            code, out, err = run(prompt("s1"), home, **KEY)
+            check("bloqueia (exit 2)", code == 2, f"{code} {err}")
+            check("achado etiquetado (jev)", "nome de pessoa (0.93) (jev)" in err, err)
+            check("sem a etiqueta antiga (modelo local)", "modelo local" not in err, err)
+            check("Bearer chegou ao servidor", bool(jev_requests()) and jev_requests()[0]["auth"] == "Bearer chave-de-teste", str(_JevHandler.received)[:200])
+            check("Ollama nunca foi contactado", ollama_requests() == [], str(ollama_requests()))
+            blocked = [e for e in events(home) if e["action"] == "blocked"]
+            check("evento blocked com kind Jev", bool(blocked) and any(f["kind"] == "Jev" for f in blocked[-1]["findings"]), str(blocked[-1:]))
+    finally:
+        server.shutdown()
+
+    print("\n=== incerto com fail_closed=false: passa e fica no log ===")
+    low = json.loads(json.dumps(JEV_CONFIDENT["answers"]))
+    low["nivel"]["confidence"] = 0.30
+    server, url = fake_jev(low)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            jev_config(home, url)
+            code, out, err = run(prompt("s1"), home, **KEY)
+            check("passa (exit 0)", code == 0, f"{code} {err}")
+            check("sem systemMessage: incerto não é degradação", system_message(out) == "", repr(out))
+            unc = [e for e in events(home) if e["action"] == "uncertain"]
+            check("evento uncertain com a confiança na nota", bool(unc) and "0.30" in unc[-1].get("note", ""), str(unc))
+            check("nenhum evento degraded", degraded_count(home) == 0, str(degraded_count(home)))
+
+            print("\n=== incerto com fail_closed=true: bloqueia a MEDIO ===")
+            jev_config(home, url, fail_closed=True)
+            code, out, err = run(prompt("s1"), home, **KEY)
+            check("bloqueia (exit 2)", code == 2, f"{code} {err}")
+            check("mensagem diz MEDIO", "(MEDIO)" in err, err)
+            check("achado explica o fail_closed", "Jev incerto (fail_closed)" in err, err)
+            check("!ok continua a destrancar", run({**prompt("s1"), "prompt": "!ok " + CLEAN_PROMPT}, home, **KEY)[0] == 0)
+
+            print("\n=== incerto nunca baixa o nível que a regex já deu ===")
+            jev_config(home, url, fail_closed=True, client_terms=["Northwind"])
+            code, out, err = run({**prompt("s1"), "prompt": MEDIO_PROMPT}, home, **KEY)
+            check("MEDIO da regex mantém-se e bloqueia", code == 2 and "(MEDIO)" in err, err)
+    finally:
+        server.shutdown()
+
+    print("\n=== model=jev sem chave: degradado, aviso visível, Ollama intocado ===")
+    server, url = fake_jev(JEV_CONFIDENT["answers"])
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            jev_config(home, url)
+            code, out, err = run(prompt("s1"), home)  # sem KEY
+            check("passa (exit 0)", code == 0, f"{code} {err}")
+            msg = system_message(out)
+            check("aviso diz que falta a chave e ficou só a regex", "chave" in msg and "regex" in msg, msg)
+            check("evento degraded", degraded_count(home) == 1, str(degraded_count(home)))
+            check("nem Jev nem Ollama contactados", _JevHandler.received == [], str(_JevHandler.received)[:200])
+
+            print("\n=== GUARD_RAIL_MODEL=jev no ambiente também conta ===")
+            (home / ".config" / "guard-rail.json").write_text(json.dumps({"jev_host": url, "ollama_host": url.rsplit("/v1", 1)[0]}), encoding="utf-8")
+            code, out, err = run(prompt("s2"), home, GUARD_RAIL_MODEL="jev")
+            check("degradado por falta de chave, não foi ao Ollama", degraded_count(home) == 2 and ollama_requests() == [], f"{degraded_count(home)} {ollama_requests()}")
+    finally:
+        server.shutdown()
+
+    print("\n=== HTTP 401: degradado como o Ollama em baixo ===")
+    server, url = fake_jev({}, status=401)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            jev_config(home, url)
+            code, out, err = run(prompt("s1"), home, **KEY)
+            check("passa (exit 0)", code == 0, f"{code} {err}")
+            notes = [e.get("note", "") for e in events(home) if e["action"] == "degraded"]
+            check("nota do degraded tem o 401", any("401" in n for n in notes), str(notes))
+    finally:
+        server.shutdown()
+
+
+# ---------------------------------------------------------------------------
 # 2. A degradação é visível, sem inundar a sessão
 # ---------------------------------------------------------------------------
 
@@ -332,6 +488,7 @@ def test_visible_warning() -> None:
 if __name__ == "__main__":
     test_payload()
     test_jev_client()
+    test_guard_with_jev()
     test_visible_warning()
     print(f"\n{results['pass']} ok, {results['fail']} falhas")
     sys.exit(1 if results["fail"] else 0)
