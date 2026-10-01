@@ -62,6 +62,9 @@ def load_config() -> dict:
                 pass
     if os.environ.get("GUARD_RAIL_OFF") == "1":
         cfg["enabled"] = False
+    env_model = os.environ.get("GUARD_RAIL_MODEL", "").strip()
+    if env_model:
+        cfg["model"] = env_model
     return cfg
 
 
@@ -182,6 +185,9 @@ def main() -> int:
 
     if (
         cfg["llm_on_tool_output"]
+        # Jev nao extrai literais, e com ele escolhido o Ollama pode nem
+        # estar ligado: a camada fica desligada e o doctor diz isso.
+        and cfg["model"] != "jev"
         and isinstance(redacted, str)
         and len(redacted) <= cfg["llm_max_chars"]
         and matches(tool_name, cfg["llm_tool_matchers"])

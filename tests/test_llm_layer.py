@@ -447,6 +447,74 @@ def test_guard_with_jev() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1d. redact.py e heartbeat.py com model=jev
+# ---------------------------------------------------------------------------
+
+def run_hook(script: str, payload: dict, home: Path, **extra) -> tuple[int, str, str]:
+    env = {**os.environ, "HOME": str(home), "CLAUDE_PLUGIN_ROOT": str(ROOT)}
+    for var in ("GUARD_RAIL_OFF", "GUARD_RAIL_MODEL", "TYPESAFE_API_KEY", "CLAUDE_PLUGIN_OPTION_TYPESAFE_API_KEY"):
+        env.pop(var, None)
+    env.update(extra)
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "hooks" / script)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def test_redact_and_heartbeat_with_jev() -> None:
+    print("\n=== redact.py com model=jev: extração desligada, Ollama intocado ===")
+    server, url = fake_jev(JEV_CONFIDENT["answers"])
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            jev_config(home, url, llm_on_tool_output=True, llm_tool_matchers=["Read"])
+            payload = {
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Read",
+                "tool_response": "responsável: Tomás Alvarenga, contacto joao.silva@exemplo.pt",
+                "session_id": "s1",
+                "cwd": tmp,
+            }
+            code, out, err = run_hook("redact.py", payload, home, **KEY)
+            check("exit 0", code == 0, err)
+            check("a regex continua a redigir o email", "EMAIL_001" in out, out[:300])
+            check("nenhum pedido ao Ollama nem ao Jev", _JevHandler.received == [], str(_JevHandler.received)[:200])
+            check("sem evento degraded", degraded_count(home) == 0, str(degraded_count(home)))
+
+            print("\n=== GUARD_RAIL_MODEL=jev no ambiente desliga a extração na mesma ===")
+            (home / ".config" / "guard-rail.json").write_text(
+                json.dumps({"ollama_host": url.rsplit("/v1", 1)[0], "llm_on_tool_output": True, "llm_tool_matchers": ["Read"]}),
+                encoding="utf-8",
+            )
+            code, out, err = run_hook("redact.py", payload, home, GUARD_RAIL_MODEL="jev", **KEY)
+            check("nenhum pedido", _JevHandler.received == [], str(_JevHandler.received)[:200])
+    finally:
+        server.shutdown()
+
+    print("\n=== heartbeat.py regista o modelo ===")
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        code, out, err = run_hook("heartbeat.py", {"session_id": "s1", "cwd": tmp}, home)
+        armed = [e for e in events(home) if e["action"] == "armed"]
+        check("armed por omissão diz model=qwen3.5:9b", bool(armed) and "model=qwen3.5:9b" in armed[-1]["note"], str(armed[-1:]))
+        check("sem aviso no contexto", out.strip() == "", repr(out))
+
+        (home / ".config" / "guard-rail.json").parent.mkdir(parents=True, exist_ok=True)
+        (home / ".config" / "guard-rail.json").write_text(json.dumps({"model": "jev"}), encoding="utf-8")
+        code, out, err = run_hook("heartbeat.py", {"session_id": "s2", "cwd": tmp}, home)
+        armed = [e for e in events(home) if e["action"] == "armed"]
+        check("armed diz model=jev", "model=jev" in armed[-1]["note"], str(armed[-1:]))
+        check("jev sem chave: uma linha no contexto", "model=jev" in out and "chave" in out, repr(out))
+
+        code, out, err = run_hook("heartbeat.py", {"session_id": "s3", "cwd": tmp}, home, **KEY)
+        check("jev com chave: silêncio", out.strip() == "", repr(out))
+
+
+# ---------------------------------------------------------------------------
 # 2. A degradação é visível, sem inundar a sessão
 # ---------------------------------------------------------------------------
 
@@ -489,6 +557,7 @@ if __name__ == "__main__":
     test_payload()
     test_jev_client()
     test_guard_with_jev()
+    test_redact_and_heartbeat_with_jev()
     test_visible_warning()
     print(f"\n{results['pass']} ok, {results['fail']} falhas")
     sys.exit(1 if results["fail"] else 0)

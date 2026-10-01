@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import auditlog  # noqa: E402
+import classifier  # noqa: E402
 import state  # noqa: E402
 
 
@@ -50,8 +51,12 @@ def main() -> int:
     # O estado do interruptor entra no log do arranque: sem isto, uma sessao
     # inteira com o guard-rail desligado seria indistinguivel de uma sessao
     # protegida em que nada foi apanhado.
-    enabled, source = state.status(Path(os.environ.get("CLAUDE_PLUGIN_ROOT", Path(__file__).parent.parent)))
+    root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", Path(__file__).parent.parent))
+    enabled, source = state.status(root)
     estado = "ligado" if enabled else f"DESLIGADO({source})"
+    # O modelo tambem entra: com `jev` o texto residual sai da maquina, e o
+    # log tem de dizer a partir de que sessao.
+    model, _ = state.model_status(root)
 
     auditlog.record(
         severity="INFO",
@@ -59,13 +64,17 @@ def main() -> int:
         point="SessionStart",
         session_id=data.get("session_id", ""),
         cwd=data.get("cwd", ""),
-        note=f"estado={estado} superficie={detect_surface()} python={sys.version.split()[0]}",
+        note=f"estado={estado} model={model} superficie={detect_surface()} python={sys.version.split()[0]}",
     )
 
     if not enabled:
         # SessionStart escreve no contexto pelo stdout. Uma linha so, para
         # quem esqueceu o interruptor desligado nao descobrir tarde demais.
         print("[guard-rail] DESLIGADO — nada e' verificado nem redigido nesta sessao. `guard-rail on` para voltar.")
+    elif model == state.JEV and not classifier.jev_api_key():
+        # Escolheu o Jev mas nao ha chave: a classificacao residual nao vai
+        # correr. Uma linha, para nao descobrir isto so no doctor.
+        print("[guard-rail] model=jev sem chave: classificação só por regex. Define a chave nas opções do plugin.")
 
     return 0
 
