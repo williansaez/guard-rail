@@ -96,7 +96,7 @@ class _JevHandler(http.server.BaseHTTPRequestHandler):
 
     answers: dict = {}
     status: int = 200
-    location: str | None = None
+    location = None  # str ou None; sem anotacao `X | Y`, que rebenta em 3.9
     received: list = []
 
     def do_POST(self):  # noqa: N802
