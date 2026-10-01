@@ -46,8 +46,20 @@ Cowork), the tool involved, the shape of the input, and what the model received.
   is the only available action.
 
 Detected values never leave the machine. The pseudonym map and the audit log are
-local files with `0600` permissions. The optional classification layer runs
-against a local Ollama instance; nothing is sent to a third party.
+local files with `0600` permissions. By default the optional classification
+layer runs against a local Ollama instance, and nothing is sent to a third party.
+
+**If you run `guard-rail model jev`, that changes.** The residual classifier
+becomes TypeSafe's Jev, a cloud API. For every prompt the regex could not decide
+on its own (no check-digit hit, at least `min_chars_for_llm` characters), the
+prompt text — after the regex has masked system identifiers, but with any name
+or address the regex cannot see still in it — is sent to `api.typesafe.ai`. Jev
+returns typed answers (a level and probabilities), never text, and the plugin
+stores none of the exchange. The switch is recorded in the audit log as a
+`toggled` event with the old and new model, and every session start records the
+model in use, so for any window you can tell whether residual prompts stayed
+local. The entity-extraction layer on tool output is off under Jev, because Jev
+cannot return literals.
 
 ## What this tool does not protect
 

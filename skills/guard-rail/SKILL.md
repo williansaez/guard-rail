@@ -47,12 +47,13 @@ Bloqueios de nível MÉDIO podem ser ultrapassados com o prefixo `!ok`, se ele d
 | `blocked` | Prompt travado. Normal. |
 | `not_redacted` | **Dado passou em claro.** É o evento que interessa investigar. |
 | `degraded` | Modelo local indisponível; só a regex esteve activa nessa janela. |
+| `uncertain` | O Jev respondeu com pouca confiança; a regex decidiu (ou `fail_closed` bloqueou a MEDIO). |
 | `armed` | Sessão arrancou com os hooks activos. |
 
 O log guarda pseudónimos, nunca valores reais — de propósito, para não se tornar ele próprio um depósito de dados pessoais. Ao resumires o log, mantém-no assim.
 
 ## Limites que deves saber
 
-A deteção por regex só apanha o que tem estrutura e dígito de controlo. **Nomes de pessoas em texto livre passam**, a não ser que o utilizador tenha ligado a camada do modelo local ou declarado os termos em `client_terms`.
+A deteção por regex só apanha o que tem estrutura e dígito de controlo. **Nomes de pessoas em texto livre passam**, a não ser que o utilizador tenha ligado a camada do modelo (Ollama local por omissão, ou Jev com `guard-rail model jev`; os achados vêm etiquetados `(modelo local)` ou `(jev)`) ou declarado os termos em `client_terms`.
 
 Ou seja: a ausência de pseudónimos num resultado **não prova** que ele está limpo. Se notares o que parece ser um nome de pessoa real num resultado não redigido, diz ao utilizador em vez de assumires que o guarda o aprovou.

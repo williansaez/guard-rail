@@ -16,8 +16,10 @@ yourself are checked too, and blocked when they carry personal data, because tha
 hook cannot rewrite text.
 
 Detection is regex with check-digit validation, so document numbers and system
-identifiers survive untouched. An optional local model, served by Ollama, covers
-free-text names the regex cannot reach. Nothing leaves your machine.
+identifiers survive untouched. An optional model covers free-text names the
+regex cannot reach: a local one served by Ollama by default, or TypeSafe's Jev
+if you opt in with `guard-rail model jev`. With the default, nothing leaves your
+machine.
 
 > **Redaction is not a guarantee.** Names in free text pass through by default,
 > results above a size limit pass uninspected, and a plugin whose hooks never fire
@@ -190,8 +192,9 @@ Inside a session:
 | `/guard-rail:log` | Recorded violations; takes `--today`, `--leaks`, `--summary` |
 | `/guard-rail:map EMAIL_001` | Resolve one pseudonym |
 | `/guard-rail:toggle on\|off` | Turn the guard on or off; no argument shows the state |
+| `/guard-rail:model [name]` | Show the classifier in use and the models available; `jev` or an Ollama name switches |
 
-In a terminal: `guard-rail doctor | log | map | status | on | off | local | purge`.
+In a terminal: `guard-rail doctor | log | map | status | on | off | model | local | purge`.
 
 `guard-rail local <file>` runs a blocked prompt against your local model, so a
 question you could not ask the provider still gets answered.
@@ -211,7 +214,10 @@ your Ollama. For a full diagnosis there, use a terminal.
 | `redact_matchers` | `mcp__*__*`, `Read`, `Grep`, `Bash` | Tools whose results are inspected. |
 | `max_output_chars` | `400000` | Above this, results pass uninspected and log a `not_redacted` event. |
 | `llm_on_tool_output` | `false` | Local model on tool results. Catches names; costs latency on every call. Measure before enabling. |
-| `fail_closed` | `false` | When Ollama is down: `true` blocks defensively, `false` trusts the regex alone. |
+| `model` | `qwen3.5:9b` | Who classifies residual prompts: an Ollama model name, or `jev`. Set it with `guard-rail model`, not here. |
+| `jev_host` | `https://api.typesafe.ai/v1/systemone` | Jev endpoint. Only used with `model: jev`. |
+| `jev_model` | `jev-latest` | Jev model id sent in the request. |
+| `fail_closed` | `false` | When the classifier is down, or Jev answers below 0.6 confidence: `true` blocks at MEDIO, `false` trusts the regex alone. |
 
 ### Turning it off, and back on
 
@@ -227,6 +233,32 @@ why the switch does not live there. It applies from the next hook call onward;
 restart the session if you want certainty.
 
 `GUARD_RAIL_OFF=1` still works and overrides the file, for one process only.
+
+### Choosing the classifier
+
+```
+guard-rail model              # what is in use, and what is available
+guard-rail model jev          # TypeSafe's Jev: faster and sharper, but the residual text leaves the machine
+guard-rail model qwen3.5:9b   # back to a local Ollama model
+```
+
+`jev` needs a TypeSafe API key, set in the plugin options (Claude Code keeps it
+in the Keychain) or as `TYPESAFE_API_KEY`. Without it the regex decides alone
+and the session start says so.
+
+On a 46-case synthetic corpus (2026-10-01):
+
+| | qwen3.5:9b local | Jev |
+|---|---|---|
+| 3-level accuracy | 93% | 98% |
+| personal data blocked | 95% | 100% |
+| clean prompts blocked by mistake | 10% | 5% |
+| median latency | 2.2 s | 339 ms |
+
+Jev answers with a confidence. Below 0.6 the answer is logged as `uncertain`
+and `fail_closed` decides whether the prompt passes or blocks at MEDIO. Jev
+cannot return literals, so with it selected the name-extraction layer on tool
+output (`llm_on_tool_output`) is off.
 
 Turning the guard off is a decision, not a silent state: `SessionStart` says so
 in the transcript, `guard-rail doctor` reports it as a problem, and the switch

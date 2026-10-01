@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-10-01
+
+### Added
+
+- `guard-rail model` and `/guard-rail:model`: show the classifier in use and
+  the models available, or switch. `jev` selects TypeSafe's Jev, a cloud API
+  that answered a 46-case synthetic corpus at 98% accuracy and 339 ms median
+  against 93% and 2.2 s for the local `qwen3.5:9b`. Any other name selects
+  that Ollama model. The default is unchanged. The choice is written to
+  `~/.config/guard-rail.json` and recorded in the audit log as a `toggled`
+  event with the transition; every session start records the model in use.
+- The TypeSafe key is a plugin option (`typesafe_api_key`, kept in the
+  Keychain), with `TYPESAFE_API_KEY` as the fallback for manual installs.
+- Findings from the LLM layer now say which backend produced them, `(jev)`
+  or `(modelo local)`, in the block message and in the audit log.
+- A Jev answer below 0.6 confidence is logged as a new `uncertain` event;
+  `fail_closed` decides whether it passes or blocks at MEDIO.
+- `guard-rail doctor` has a `── Modelo ──` section: which model, from where,
+  whether it answers, and whether extraction on tool output is off.
+- `tests/test_model.py`, and Jev coverage in `tests/test_llm_layer.py` with a
+  fake Jev on localhost that also catches any stray call to Ollama.
+
+### Changed
+
+- With `model: jev` the entity-extraction layer on tool output is off, because
+  Jev returns typed answers and never literals. The doctor says so.
+- `SECURITY.md` and the README state the privacy promise for the default and
+  what changes under Jev.
+
 ## [2.2.1] - 2026-09-21
 
 ### Fixed
