@@ -96,6 +96,7 @@ class _JevHandler(http.server.BaseHTTPRequestHandler):
 
     answers: dict = {}
     status: int = 200
+    location: str | None = None
     received: list = []
 
     def do_POST(self):  # noqa: N802
@@ -104,6 +105,8 @@ class _JevHandler(http.server.BaseHTTPRequestHandler):
         type(self).received.append({"path": self.path, "auth": self.headers.get("Authorization", ""), "body": body})
         data = json.dumps({"answers": type(self).answers}).encode("utf-8")
         self.send_response(type(self).status)
+        if type(self).location:
+            self.send_header("Location", type(self).location)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -216,12 +219,16 @@ def capture_request(fn, body: dict) -> dict:
         sent["url"] = req.full_url
         return _FakeResponse(body)
 
+    # O caminho Ollama usa urlopen; o Jev usa o seu opener sem redirects.
     original = classifier.urllib.request.urlopen
+    original_jev = classifier._jev_open
     classifier.urllib.request.urlopen = fake_urlopen
+    classifier._jev_open = fake_urlopen
     try:
         sent["result"] = fn()
     finally:
         classifier.urllib.request.urlopen = original
+        classifier._jev_open = original_jev
     return sent
 
 
@@ -290,12 +297,12 @@ def test_jev_client() -> None:
         called.append(req.full_url)
         raise AssertionError("não devia ter chamado a rede")
 
-    original = classifier.urllib.request.urlopen
-    classifier.urllib.request.urlopen = no_network
+    original = classifier._jev_open
+    classifier._jev_open = no_network
     try:
         level, findings, err, meta = classifier.classify(CLEAN_PROMPT, model="jev")
     finally:
-        classifier.urllib.request.urlopen = original
+        classifier._jev_open = original
     check("erro diz que falta a chave", err is not None and "chave" in err and "Jev" in err, str(err))
     check("nível NENHUM", level == "NENHUM", level)
     check("nenhuma chamada de rede", called == [], str(called))
@@ -311,9 +318,21 @@ def test_jev_client() -> None:
     check("confiança no meta", meta.get("confidence") == 0.3, str(meta))
 
     print("\n=== respostas estranhas não rebentam ===")
+    # Sem `nivel` utilizavel nao e' "incerto" (que nao avisa): e' resposta
+    # invalida, caminho degradado, que avisa uma vez por sessao.
     sent = capture_request(lambda: classifier.classify(CLEAN_PROMPT, model="jev", api_key="k"), {"answers": {}})
     level, findings, err, meta = sent["result"]
-    check("answers vazio: incerto, não excepção", err is not None and level == "NENHUM", f"{level} {err}")
+    check("answers vazio: degradado, não incerto", err is not None and level == "NENHUM" and meta.get("uncertain") is False, f"{level} {err} {meta}")
+
+    null_choice = {"answers": {"nivel": {"choice": None, "confidence": 0.9}, "pessoa": {"noul": 0.9}}}
+    sent = capture_request(lambda: classifier.classify(CLEAN_PROMPT, model="jev", api_key="k"), null_choice)
+    level, findings, err, meta = sent["result"]
+    check("choice nulo com confiança alta: degradado, nunca NENHUM silencioso", err is not None and meta.get("uncertain") is False, f"{level} {err} {meta}")
+
+    foo_choice = {"answers": {"nivel": {"choice": "FOO", "confidence": 0.95}}}
+    sent = capture_request(lambda: classifier.classify(CLEAN_PROMPT, model="jev", api_key="k"), foo_choice)
+    level, findings, err, meta = sent["result"]
+    check("choice desconhecido: degradado", err is not None and meta.get("uncertain") is False, f"{level} {err} {meta}")
 
     sent = capture_request(lambda: classifier.classify(CLEAN_PROMPT, model="jev", api_key="k"), {"nada": 1})
     level, findings, err, meta = sent["result"]
@@ -330,13 +349,24 @@ def test_jev_client() -> None:
     def http_401(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
 
-    original = classifier.urllib.request.urlopen
-    classifier.urllib.request.urlopen = http_401
+    original = classifier._jev_open
+    classifier._jev_open = http_401
     try:
         level, findings, err, meta = classifier.classify(CLEAN_PROMPT, model="jev", api_key="k")
     finally:
-        classifier.urllib.request.urlopen = original
+        classifier._jev_open = original
     check("HTTP 401 vira erro com o código", err is not None and "401" in err, str(err))
+
+    print("\n=== um redirect não leva a chave nem o texto a outro host ===")
+    server, url = fake_jev({}, status=302)
+    _JevHandler.location = "http://127.0.0.1:1/outro-sitio"
+    try:
+        level, findings, err, meta = classifier.classify(CLEAN_PROMPT, model="jev", api_key="k", jev_host=url, timeout=3)
+    finally:
+        _JevHandler.location = None
+        server.shutdown()
+    check("302 é recusado como erro HTTP", err is not None and "302" in err, str(err))
+    check("só um pedido saiu, nenhum para o destino do redirect", len(_JevHandler.received) == 1, str(_JevHandler.received)[:200])
 
     level, findings, err, meta = classifier.classify(CLEAN_PROMPT, model="jev", api_key="k", jev_host="http://127.0.0.1:1/jev", timeout=2)
     check("ligação recusada vira 'Jev inacessivel'", err is not None and "inacess" in err, str(err))
@@ -347,11 +377,14 @@ def test_jev_client() -> None:
     check("backend ollama, sem confiança", meta == {"backend": "ollama", "confidence": None, "uncertain": False}, str(meta))
 
     print("\n=== extract_entities com jev não vai à rede ===")
+    original_urlopen = classifier.urllib.request.urlopen
     classifier.urllib.request.urlopen = no_network
+    classifier._jev_open = no_network
     try:
         out = classifier.extract_entities("a Maria Silva mora na Rua X", model="jev")
     finally:
-        classifier.urllib.request.urlopen = original
+        classifier.urllib.request.urlopen = original_urlopen
+        classifier._jev_open = original
     check("devolve lista vazia", out == [], str(out))
     check("nenhuma chamada", called == [], str(called))
 
@@ -395,6 +428,7 @@ def test_guard_with_jev() -> None:
             check("sem systemMessage: incerto não é degradação", system_message(out) == "", repr(out))
             unc = [e for e in events(home) if e["action"] == "uncertain"]
             check("evento uncertain com a confiança na nota", bool(unc) and "0.30" in unc[-1].get("note", ""), str(unc))
+            check("a nota diz para que nível o Jev pendia", bool(unc) and "nivel=ALTO" in unc[-1].get("note", ""), str(unc))
             check("nenhum evento degraded", degraded_count(home) == 0, str(degraded_count(home)))
 
             print("\n=== incerto com fail_closed=true: bloqueia a MEDIO ===")
@@ -403,6 +437,7 @@ def test_guard_with_jev() -> None:
             check("bloqueia (exit 2)", code == 2, f"{code} {err}")
             check("mensagem diz MEDIO", "(MEDIO)" in err, err)
             check("achado explica o fail_closed", "Jev incerto (fail_closed)" in err, err)
+            check("achado mostra confiança e nível", "0.30" in err and "ALTO" in err, err)
             check("!ok continua a destrancar", run({**prompt("s1"), "prompt": "!ok " + CLEAN_PROMPT}, home, **KEY)[0] == 0)
 
             print("\n=== incerto nunca baixa o nível que a regex já deu ===")
@@ -429,6 +464,22 @@ def test_guard_with_jev() -> None:
             (home / ".config" / "guard-rail.json").write_text(json.dumps({"jev_host": url, "ollama_host": url.rsplit("/v1", 1)[0]}), encoding="utf-8")
             code, out, err = run(prompt("s2"), home, GUARD_RAIL_MODEL="jev")
             check("degradado por falta de chave, não foi ao Ollama", degraded_count(home) == 2 and ollama_requests() == [], f"{degraded_count(home)} {ollama_requests()}")
+    finally:
+        server.shutdown()
+
+    print("\n=== ALTO confiante sem nenhum noul acima de 0.5: o bloqueio diz quem decidiu ===")
+    bare = {"nivel": {"choice": "ALTO", "confidence": 0.97}, "pessoa": {"noul": 0.4}, "morada": {"noul": 0.1}, "saude": {"noul": 0.1}, "cliente": {"noul": 0.1}}
+    server, url = fake_jev(bare)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            jev_config(home, url)
+            code, out, err = run(prompt("s1"), home, **KEY)
+            check("bloqueia (exit 2)", code == 2, f"{code} {err}")
+            check("sem '(sem detalhe)'", "(sem detalhe)" not in err, err)
+            check("achado sintético nomeia nível e backend", "nível ALTO (jev)" in err, err)
+            blocked = [e for e in events(home) if e["action"] == "blocked"]
+            check("evento blocked com um achado Jev", bool(blocked) and blocked[-1].get("total", 0) >= 1 and any(f["kind"] == "Jev" for f in blocked[-1].get("findings", [])), str(blocked[-1:]))
     finally:
         server.shutdown()
 

@@ -191,17 +191,21 @@ def main() -> int:
         if err and meta.get("uncertain"):
             # Resposta valida mas pouco confiante. Nao e' avaria: fica no log
             # com accao propria, e fail_closed decide se o portao fecha.
+            # A nota leva o nivel para que o Jev pendia: "ALTO a 0.30 e passou"
+            # e "NENHUM a 0.30 e passou" sao factos diferentes numa auditoria.
             auditlog.record(
                 severity="INFO",
                 action=auditlog.UNCERTAIN,
                 point="UserPromptSubmit",
                 session_id=session_id,
                 cwd=cwd,
-                note=err,
+                note=f"{err}, nivel={llm_level}",
             )
             if cfg["fail_closed"]:
                 level = detectors.max_level(level, "MEDIO")
-                findings.append("Jev incerto (fail_closed)")
+                conf = meta.get("confidence")
+                conf_txt = f"{conf:.2f}" if isinstance(conf, float) else "?"
+                findings.append(f"Jev incerto (fail_closed): nível {llm_level} com confiança {conf_txt}")
                 audit_items.append(("Jev incerto", None))
         elif err:
             warning = f"{err} — decisão tomada só pela regex."
@@ -223,6 +227,12 @@ def main() -> int:
             level = detectors.max_level(level, llm_level)
             findings += [f"{f} ({label})" for f in llm_findings]
             audit_items += [(kind, None) for _ in llm_findings]
+            if llm_level != "NENHUM" and not llm_findings:
+                # O nivel e os achados sao perguntas independentes: um ALTO
+                # confiante sem nenhum achado acima do limiar bloquearia
+                # "sem detalhe" e sem rasto de quem decidiu.
+                findings.append(f"nível {llm_level} ({label})")
+                audit_items.append((kind, None))
 
     # 5. Decisao
     if LEVEL_ORDER[level] >= LEVEL_ORDER[cfg["block_at"]]:

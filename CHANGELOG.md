@@ -25,6 +25,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   whether it answers, and whether extraction on tool output is off.
 - `tests/test_model.py`, and Jev coverage in `tests/test_llm_layer.py` with a
   fake Jev on localhost that also catches any stray call to Ollama.
+- The Jev client refuses HTTP redirects, so neither the key nor the prompt
+  text can be re-sent to a host the response names. A reply without a usable
+  `nivel` is a `degraded` classification (which warns), never a silent
+  NENHUM; an `uncertain` event records which level Jev leaned towards.
 
 ### Changed
 

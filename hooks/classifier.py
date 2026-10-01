@@ -111,6 +111,21 @@ def jev_api_key() -> str | None:
     return None
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """
+    Um 3xx faria o urllib reenviar o pedido — com a chave no header e o texto
+    no corpo — para o host que a resposta indicasse. Para um segredo e um
+    prompt residual, isso nao se segue: trata-se como erro HTTP.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect recusado", headers, fp)
+
+
+def _jev_open(req, timeout):
+    return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+
+
 def _meta(backend: str, confidence: float | None = None, uncertain: bool = False) -> dict:
     return {"backend": backend, "confidence": confidence, "uncertain": uncertain}
 
@@ -148,7 +163,7 @@ def _classify_jev(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _jev_open(req, timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         return "NENHUM", [], f"Jev devolveu HTTP {exc.code}", _meta(JEV)
@@ -163,10 +178,14 @@ def _classify_jev(
     if not isinstance(answers, dict):
         return "NENHUM", [], "Resposta do Jev nao era JSON valido", _meta(JEV)
 
-    nivel = answers.get("nivel") if isinstance(answers.get("nivel"), dict) else {}
-    level = str(nivel.get("choice", "NENHUM")).upper()
+    # Sem um `nivel` utilizavel a resposta e' invalida, nao "incerta": vai pelo
+    # caminho degradado, que avisa. Um NENHUM silencioso aqui seria o pior
+    # resultado possivel — o utilizador julgar-se-ia classificado sem estar.
+    nivel = answers.get("nivel")
+    choice = nivel.get("choice") if isinstance(nivel, dict) else None
+    level = choice.upper() if isinstance(choice, str) else ""
     if level not in {"ALTO", "MEDIO", "NENHUM"}:
-        level = "NENHUM"
+        return "NENHUM", [], "Resposta do Jev sem nivel utilizavel", _meta(JEV)
     confidence = round(_as_float(nivel.get("confidence")), 2)
 
     findings: list[str] = []
