@@ -132,8 +132,70 @@ def test_state_module() -> None:
         check("model vazio no ficheiro é ignorado", model == "llama3:8b", f"{model} {source}")
 
 
+def test_cli() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        # Ollama inacessivel de imediato, sem timeout.
+        write_user_config(home, {"ollama_host": "http://127.0.0.1:1"})
+
+        print("\n=== guard-rail model sem argumento ===")
+        code, out = cli(["model"], home)
+        check("exit 0 com Ollama em baixo e sem chave", code == 0, out)
+        check("mostra o modelo activo", "qwen3.5:9b" in out, out)
+        # O config.json do plugin envia `model`, por isso a origem e' ele, nao o default.
+        check("diz a origem", "config.json do plugin" in out, out)
+        check("lista jev como cloud", "jev" in out and "sai da máquina" in out, out)
+        check("jev marcado sem chave", "sem chave" in out, out)
+        check("diz que o Ollama não responde", "Ollama" in out and "não responde" in out, out)
+
+        print("\n=== guard-rail model jev ===")
+        code, out = cli(["model", "jev"], home)
+        check("exit 0", code == 0, out)
+        check("grava model=jev no ficheiro pessoal", user_config(home).get("model") == "jev", str(user_config(home)))
+        check("preserva ollama_host", user_config(home).get("ollama_host") == "http://127.0.0.1:1", str(user_config(home)))
+        check("avisa que o texto residual sai da máquina", "sai da máquina" in out, out)
+        check("avisa que falta a chave", "chave" in out, out)
+        log = log_text(home)
+        check("evento toggled com a transição", '"action": "toggled"' in log and "model: qwen3.5:9b → jev" in log, log[-400:])
+
+        code, out = cli(["model"], home)
+        check("status agora diz jev", "jev" in out.split("Disponíveis")[0], out)
+
+        print("\n=== guard-rail model com chave no ambiente ===")
+        code, out = cli(["model"], home, CLAUDE_PLUGIN_OPTION_TYPESAFE_API_KEY="segredo-xyz-123")
+        check("jev sem a marca 'sem chave'", "sem chave" not in out, out)
+        check("a chave nunca aparece no output", "segredo-xyz-123" not in out, out)
+
+        print("\n=== voltar a um modelo Ollama que o Ollama não lista ===")
+        code, out = cli(["model", "llama3:8b"], home)
+        check("exit 0", code == 0, out)
+        check("grava na mesma", user_config(home).get("model") == "llama3:8b", str(user_config(home)))
+        check("avisa que não está no Ollama", "não" in out and "Ollama" in out, out)
+
+        print("\n=== GUARD_RAIL_MODEL no ambiente ===")
+        code, out = cli(["model"], home, GUARD_RAIL_MODEL="jev")
+        check("origem é a variável de ambiente", "GUARD_RAIL_MODEL" in out, out)
+
+        print("\n=== argumento vazio ou inválido ===")
+        code, out = cli(["model", "   "], home)
+        check("nome vazio é recusado", code == 1, out)
+
+        print("\n=== doctor com jev sem chave ===")
+        write_user_config(home, {"ollama_host": "http://127.0.0.1:1", "model": "jev", "llm_on_tool_output": True})
+        code, out = cli(["doctor"], home)
+        check("secção Modelo", "── Modelo ──" in out, out)
+        check("diz jev sem chave como problema", "jev" in out and "sem chave" in out and code == 1, out)
+        check("diz que a extração em output está desligada", "extração" in out and "desligada" in out, out)
+
+        print("\n=== doctor com qwen e Ollama em baixo: aviso, não problema ===")
+        write_user_config(home, {"ollama_host": "http://127.0.0.1:1"})
+        code, out = cli(["doctor"], home)
+        check("Ollama não responde é aviso", "Ollama não responde" in out, out)
+
+
 def main() -> int:
     test_state_module()
+    test_cli()
     print(f"\n{results['pass']} passaram, {results['fail']} falharam")
     return 1 if results["fail"] else 0
 

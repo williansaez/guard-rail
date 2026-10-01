@@ -15,8 +15,18 @@
     "redaction",
     "audit",
     "ollama",
+    "jev",
+    "typesafe",
     "hook"
   ],
+  "userConfig": {
+    "typesafe_api_key": {
+      "type": "string",
+      "title": "TypeSafe API key",
+      "description": "Only needed after `guard-rail model jev`. Without it Jev is never called and the regex layer decides alone.",
+      "sensitive": true
+    }
+  },
   "hooks": {
     "SessionStart": [
       {

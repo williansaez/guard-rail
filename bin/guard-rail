@@ -18,6 +18,10 @@ guard-rail — consola do plugin.
   guard-rail off                    desliga a proteção (fica assim entre sessões)
   guard-rail on                     volta a ligar
 
+  guard-rail model                  modelo activo e os disponíveis
+  guard-rail model jev              classificar prompts com o Jev (cloud)
+  guard-rail model qwen3.5:9b       voltar a um modelo Ollama (local)
+
   guard-rail local <ficheiro>       corre um prompt bloqueado no modelo local
   guard-rail local "pergunta"
 
@@ -45,6 +49,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "hooks"))
 
 import auditlog  # noqa: E402
+import classifier  # noqa: E402
 import pseudonyms  # noqa: E402
 import state  # noqa: E402
 
@@ -58,6 +63,7 @@ ACTION_LABEL = {
     auditlog.DEGRADED: "controlo degradado",
     auditlog.ARMED: "sessão armada",
     auditlog.TOGGLED: "interruptor",
+    auditlog.UNCERTAIN: "classificação incerta",
 }
 
 
@@ -201,7 +207,10 @@ def cmd_map(args: list[str]) -> int:
 
 
 def cmd_local(args: list[str]) -> int:
-    model = os.environ.get("GUARD_RAIL_MODEL", "qwen3.5:9b")
+    model = os.environ.get("GUARD_RAIL_MODEL") or state.model_status(ROOT)[0]
+    if model == state.JEV:
+        # `ollama run jev` nao existe. Para correr offline usa-se o default local.
+        model = state.DEFAULT_MODEL
 
     if not args:
         print("Uso: guard-rail local <ficheiro|texto>", file=sys.stderr)
@@ -318,6 +327,106 @@ def cmd_off(args: list[str]) -> int:
     return _toggle(False)
 
 
+# ------------------------------------------------------------------------- model
+
+
+def _plugin_config() -> dict:
+    cfg_path = ROOT / "config.json"
+    if not cfg_path.is_file():
+        return {}
+    try:
+        return json.loads(cfg_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _effective_config() -> dict:
+    """config.json do plugin e depois o ficheiro pessoal, como os hooks fazem."""
+    cfg = _plugin_config()
+    cfg.update(state.read_user_config())
+    return cfg
+
+
+def _ollama_models(host: str) -> list[str] | None:
+    """Nomes dos modelos no Ollama, ou None se nao responder."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as resp:
+            tags = json.loads(resp.read().decode())
+        return [m["name"] for m in tags.get("models", [])]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _print_model_status() -> tuple[str, str]:
+    model, source = state.model_status(ROOT)
+    where = "cloud" if model == state.JEV else "local"
+    print(f"\n  🧠 modelo: {model}  ({where})")
+    print(f"       origem: {state.MODEL_SOURCE_LABEL[source]}")
+    return model, source
+
+
+def _print_available(cfg: dict) -> None:
+    host = cfg.get("ollama_host", "http://localhost:11434")
+    print("\n  Disponíveis:\n")
+    names = _ollama_models(host)
+    if names is None:
+        print(f"    (Ollama não responde em {host}; os modelos locais não puderam ser listados)")
+    elif not names:
+        print(f"    (Ollama responde em {host} mas não tem modelos; `ollama pull qwen3.5:9b`)")
+    else:
+        for name in names:
+            print(f"    {name:<24} local")
+    key = "" if classifier.jev_api_key() else "  (sem chave: define-a nas opções do plugin)"
+    print(f"    {state.JEV:<24} cloud — o texto residual dos prompts sai da máquina{key}")
+    print()
+
+
+def cmd_model(args: list[str]) -> int:
+    cfg = _effective_config()
+
+    if not args:
+        _print_model_status()
+        _print_available(cfg)
+        return 0
+
+    new = args[0].strip()
+    if not new:
+        print("Uso: guard-rail model <nome|jev>", file=sys.stderr)
+        return 1
+
+    old, _ = state.model_status(ROOT)
+    path = state.set_model(new)
+
+    # Mudar quem classifica os prompts e' facto auditavel: com `jev` o texto
+    # residual passa a sair da maquina, e o log tem de delimitar essa janela.
+    auditlog.record(
+        severity="INFO",
+        action=auditlog.TOGGLED,
+        point="CLI",
+        note=f"model: {old} → {new} ({path})",
+    )
+
+    print(f"\n  🧠 modelo: {new}   → {path}")
+    if new == state.JEV:
+        print("     A classificação residual dos prompts passa a ser feita pela TypeSafe:")
+        print("     o texto que a regex não decidiu sai da máquina. Volta com: guard-rail model qwen3.5:9b")
+        if not classifier.jev_api_key():
+            print("     ⚠️  Sem chave: define TypeSafe API key nas opções do plugin, senão só a regex decide.")
+    else:
+        host = cfg.get("ollama_host", "http://localhost:11434")
+        names = _ollama_models(host)
+        if names is None:
+            print(f"     ⚠️  O Ollama não responde em {host}; não consegui confirmar que '{new}' existe.")
+        elif not any(n.split(":")[0] == new.split(":")[0] for n in names):
+            print(f"     ⚠️  O Ollama não tem '{new}'. Faz `ollama pull {new}`, senão só a regex decide.")
+    if os.environ.get("GUARD_RAIL_MODEL"):
+        print("     ⚠️  GUARD_RAIL_MODEL continua no ambiente deste shell e sobrepõe-se a isto.")
+    print()
+    return 0
+
+
 # ------------------------------------------------------------------------ doctor
 
 
@@ -347,32 +456,46 @@ def cmd_doctor(args: list[str]) -> int:
     if sys.version_info < (3, 9):
         problems += 1
 
-    # Ollama
-    import urllib.error
-    import urllib.request
+    cfg = _plugin_config()
+    if (ROOT / "config.json").is_file() and not cfg:
+        _line(False, "config.json inválido")
+        problems += 1
+    cfg.update(state.read_user_config())
 
-    cfg_path = ROOT / "config.json"
-    cfg = {}
-    if cfg_path.is_file():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            _line(False, "config.json inválido", str(exc))
-            problems += 1
+    print("\n── Modelo ──\n")
+    model, source = state.model_status(ROOT)
+    _line(True, f"modelo: {model}", state.MODEL_SOURCE_LABEL[source])
 
-    host = cfg.get("ollama_host", "http://localhost:11434")
-    model = cfg.get("model", "qwen3.5:9b")
-    try:
-        with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as resp:
-            tags = json.loads(resp.read().decode())
-        names = [m["name"] for m in tags.get("models", [])]
-        _line(True, f"Ollama acessível em {host}")
-        if any(n.split(":")[0] == model.split(":")[0] for n in names):
-            _line(True, f"Modelo {model} disponível")
+    if model == state.JEV:
+        if classifier.jev_api_key():
+            _line(True, "Jev: chave encontrada")
+            _, _, err, _ = classifier.classify(
+                "ping",
+                model=state.JEV,
+                timeout=3,
+                jev_host=cfg.get("jev_host", classifier.JEV_DEFAULT_HOST),
+                jev_model=cfg.get("jev_model", classifier.JEV_DEFAULT_MODEL),
+            )
+            if err and not err.startswith("Jev incerto"):
+                _line(None, f"Jev não respondeu: {err}", "a camada LLM fica desligada; a regex continua a funcionar")
+            else:
+                _line(True, "Jev responde")
         else:
-            _line(None, f"Modelo {model} NÃO encontrado", f"tens: {', '.join(names[:5]) or 'nenhum'}")
-    except Exception:  # noqa: BLE001
-        _line(None, f"Ollama não responde em {host}", "a camada LLM fica desligada; a regex continua a funcionar")
+            _line(False, "Jev sem chave", "define TypeSafe API key nas opções do plugin; até lá só a regex decide")
+            problems += 1
+        if cfg.get("llm_on_tool_output"):
+            _line(None, "extração em output: desligada com jev", "o Jev não devolve literais; escolhe um modelo Ollama para a ter")
+    else:
+        host = cfg.get("ollama_host", "http://localhost:11434")
+        names = _ollama_models(host)
+        if names is None:
+            _line(None, f"Ollama não responde em {host}", "a camada LLM fica desligada; a regex continua a funcionar")
+        else:
+            _line(True, f"Ollama acessível em {host}")
+            if any(n.split(":")[0] == model.split(":")[0] for n in names):
+                _line(True, f"Modelo {model} disponível")
+            else:
+                _line(None, f"Modelo {model} NÃO encontrado", f"tens: {', '.join(names[:5]) or 'nenhum'}")
 
     print("\n── Configuração ──\n")
     terms = cfg.get("client_terms", [])
@@ -458,6 +581,8 @@ def main(argv: list[str]) -> int:
         return cmd_on(args)
     if cmd == "off":
         return cmd_off(args)
+    if cmd == "model":
+        return cmd_model(args)
 
     if not CACHE.is_dir() and cmd != "local":
         print("Nada registado ainda — o guard-rail não interveio nesta máquina.")

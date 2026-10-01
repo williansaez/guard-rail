@@ -16,9 +16,11 @@
   "llm_tool_matchers": ["mcp__abap-adt__*"],
   "llm_max_chars": 4000,
 
-  "_modelo_local": "partilhado pelas duas camadas",
+  "_modelo": "Quem classifica os prompts que a regex nao decidiu. Um nome de modelo Ollama (local), ou 'jev' (TypeSafe, cloud: o texto residual sai da maquina). Muda com `guard-rail model`, que escreve em ~/.config/guard-rail.json.",
   "model": "qwen3.5:9b",
   "ollama_host": "http://localhost:11434",
+  "jev_host": "https://api.typesafe.ai/v1/systemone",
+  "jev_model": "jev-latest",
   "timeout_seconds": 8,
   "keep_alive": "30m",
 
