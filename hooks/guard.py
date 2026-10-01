@@ -167,7 +167,7 @@ def main() -> int:
         and level != "ALTO"
         and len(masked) >= cfg["min_chars_for_llm"]
     ):
-        llm_level, llm_findings, err = classifier.classify(
+        llm_level, llm_findings, err, _meta = classifier.classify(
             masked,
             model=cfg["model"],
             host=cfg["ollama_host"],
