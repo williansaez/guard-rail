@@ -200,6 +200,12 @@ def test_payload() -> None:
     )
     check("classify envia think: false", sent.get("think") is False, str(sent.get("think")))
 
+    # Regra do primeiro nome: "responde ao Joao" nao e' fuga. A politica tem
+    # de ir nos dois backends; o CI nao corre modelos, por isso garante o texto.
+    system = sent.get("system", "")
+    check("prompt Ollama: primeiro nome sozinho e' NENHUM", "primeiro nome" in system.lower() and "sozinho" in system.lower(), system[:200])
+    check("prompt Ollama: primeiro nome + saude/morada e' ALTO", "mesmo sem apelido" in system.lower(), system[:200])
+
     sent = capture_payload(
         lambda: classifier.extract_entities(CLEAN_PROMPT),
         '{"pessoas":[],"moradas":[]}',
@@ -272,6 +278,11 @@ def test_jev_client() -> None:
     check("cinco perguntas: nivel + 4 noul", set(payload.get("questions", {})) == {"nivel", "pessoa", "morada", "saude", "cliente"}, str(list(payload.get("questions", {}))))
     check("nivel é choice com ALTO/MEDIO/NENHUM", set(payload["questions"]["nivel"].get("criteria", {})) == {"ALTO", "MEDIO", "NENHUM"}, str(payload["questions"]["nivel"]))
     check("não envia campos do Ollama", "prompt" not in payload and "think" not in payload, str(list(payload)))
+    nivel_q = payload["questions"]["nivel"]
+    rule_text = (nivel_q.get("instructions", "") + " " + nivel_q["criteria"].get("NENHUM", "")).lower()
+    check("Jev nivel: primeiro nome sozinho e' NENHUM", "primeiro nome" in rule_text and "sozinho" in rule_text, rule_text[:200])
+    check("Jev nivel ALTO: primeiro nome + dado pessoal e' ALTO mesmo sem apelido", "sem apelido" in nivel_q["criteria"].get("ALTO", "").lower(), nivel_q["criteria"].get("ALTO", "")[:200])
+    check("Jev pessoa: pede nome completo ou primeiro nome com dados", "completo" in payload["questions"]["pessoa"]["instructions"].lower(), payload["questions"]["pessoa"]["instructions"])
     check("nível ALTO", level == "ALTO", level)
     check("sem erro", err is None, str(err))
     check("meta diz backend jev e confiança", meta.get("backend") == "jev" and meta.get("confidence") == 0.97 and meta.get("uncertain") is False, str(meta))

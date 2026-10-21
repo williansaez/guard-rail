@@ -11,7 +11,7 @@
       "name": "guard-rail",
       "source": "./",
       "description": "Redacts personal data in tool results with reversible pseudonyms, blocks prompts carrying PII, and logs every violation. Local model via Ollama by default; TypeSafe's Jev on request.",
-      "version": "2.3.0"
+      "version": "2.3.1"
     }
   ]
 }

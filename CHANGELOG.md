@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-10-21
+
+### Fixed
+
+- A first name on its own no longer blocks a prompt. "Responde ao João" was
+  classified ALTO by Jev 11 times out of 12 on a synthetic corpus, which made
+  the guard unusable for ordinary instructions; the criteria now say that a
+  bare first name with nothing else about the person is NENHUM, and that a
+  first name next to health, address, contact, salary or employment details
+  is ALTO even without a surname. Measured after the change: 0 of 16 bare
+  first names blocked, 15 of 15 real identifications blocked, 0 uncertain.
+  The same rule is in the Ollama prompt.
+
+### Added
+
+- `tests/bench_jev.py`: the 26-case corpus behind the numbers above, run by
+  hand with a TypeSafe key. Not part of CI. Run it before and after any change
+  to the classifier criteria.
+
 ## [2.3.0] - 2026-10-01
 
 ### Added

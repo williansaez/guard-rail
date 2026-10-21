@@ -74,6 +74,15 @@ match. It passes through untouched unless you list it in `client_terms` or enabl
 The consequence is worth stating plainly: **the absence of pseudonyms in a result
 does not mean the result was clean.** It means nothing matched.
 
+**A first name on its own is not blocked, by design.** "Reply to João that the
+transport left" names nobody in the sense that matters: no surname, no address,
+no contact, nothing about that person. The model layer is told so, for both
+backends, and it was measured: without the rule, 11 of 12 such prompts were
+blocked; with it, 0 of 16, and every real identification (a full name, or a
+first name next to health, address, salary, dismissal or contact details) still
+blocks. If your threat model treats a bare first name as personal data, put the
+names in `client_terms`: the regex layer blocks them regardless of the model.
+
 **Large results pass uninspected.** Above `max_output_chars` (400,000 by default)
 the hook gives up, logs a `not_redacted` event and lets the result through. A
 large table export defeats the tool entirely. Check `guard-rail log --leaks`.

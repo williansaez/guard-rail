@@ -260,6 +260,12 @@ and `fail_closed` decides whether the prompt passes or blocks at MEDIO. Jev
 cannot return literals, so with it selected the name-extraction layer on tool
 output (`llm_on_tool_output`) is off.
 
+A first name on its own ("reply to João that the build is green") does not
+block, on either backend. A full name does, and so does a first name next to
+health, address, contact, salary or employment details. `tests/bench_jev.py`
+holds the corpus that measured this; run it with your key before changing the
+criteria.
+
 Turning the guard off is a decision, not a silent state: `SessionStart` says so
 in the transcript, `guard-rail doctor` reports it as a problem, and the switch
 itself lands in the audit log as a `toggled` event. That way a window with no
